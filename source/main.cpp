@@ -1111,15 +1111,21 @@ int main(int argc, char* argv[]) {
         if (g_hasNowPlaying) {
             if (kDown & KEY_L) {
                 playPrevTrack(audioPlayer, videoPlayer, api);
+                kDown &= ~KEY_L;
             }
             if (kDown & KEY_R) {
                 playNextTrack(audioPlayer, videoPlayer, api);
+                kDown &= ~KEY_R;
             }
             if (kDown & KEY_X) {
                 stopAllPlayback(audioPlayer, videoPlayer, &api);
+                kDown &= ~KEY_X;
+                continue;
             }
             if (kDown & KEY_Y) {
                 g_controlsExpanded = !g_controlsExpanded;
+                kDown &= ~KEY_Y;
+                continue;
             }
         }
 
