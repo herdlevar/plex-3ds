@@ -783,19 +783,6 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // Headphone disconnection detection while lid is closed
-        bool headphonesConnected = true;
-        if (R_SUCCEEDED(DSP_GetHeadphoneStatus(&headphonesConnected))) {
-            if (s_shellClosed && s_lastHeadphoneStatus && !headphonesConnected) {
-                // Headphone disconnected with lid closed: pause and enter sleep
-                audioPlayer.pause();
-                isPlayingMusic = false;
-                aptSetSleepAllowed(true);
-                APT_SleepIfShellClosed();
-            }
-            s_lastHeadphoneStatus = headphonesConnected;
-        }
-
         // If shell is closed and we are NOT playing music (e.g. paused/stopped/video), sleep immediately
         if (s_shellClosed && !isPlayingMusic) {
             aptSetSleepAllowed(true);
@@ -805,10 +792,16 @@ int main(int argc, char* argv[]) {
         if (s_shellClosed) {
             // Clamshell is closed during music playback:
             // Physical shoulder buttons (L/R) remain functional for track skipping!
-            if (kDown & KEY_L) {
+            // Pressing START or L+R toggles play/pause with lid closed!
+            if ((kDown & KEY_START) || ((kHeld & KEY_L) && (kDown & KEY_R))) {
+                if (audioPlayer.isPaused()) {
+                    audioPlayer.resume();
+                } else {
+                    audioPlayer.pause();
+                }
+            } else if (kDown & KEY_L) {
                 playPrevTrack(audioPlayer, videoPlayer, api);
-            }
-            if (kDown & KEY_R) {
+            } else if (kDown & KEY_R) {
                 playNextTrack(audioPlayer, videoPlayer, api);
             }
 

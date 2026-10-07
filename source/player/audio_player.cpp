@@ -7,6 +7,7 @@
 #include <mpg123.h>
 #include <curl/curl.h>
 #include <cstring>
+#include <algorithm>
 
 AudioPlayer::AudioPlayer() {}
 
@@ -39,15 +40,145 @@ void AudioPlayer::exit() {
     m_initialized = false;
 }
 
+int AudioPlayer::readStream(uint8_t* buf, int maxBytes) {
+    while (m_ringSize.load() == 0) {
+        if (m_stopRequested.load() || g_appExiting.load()) return -1;
+        if (m_downloadFinished.load()) return 0; // EOF
 #ifdef __3DS__
-void AudioPlayer::streamThreadEntry(void* arg) {
-    AudioPlayer* self = static_cast<AudioPlayer*>(arg);
-    if (self) {
-        self->streamLoop();
+        svcSleepThread(5000000); // 5ms
+#endif
     }
+
+    if (m_stopRequested.load() || g_appExiting.load()) return -1;
+
+    size_t toRead = std::min((size_t)maxBytes, m_ringSize.load());
+    size_t firstPart = std::min(toRead, m_ringCap - m_ringTail);
+    memcpy(buf, &m_ringBuf[m_ringTail], firstPart);
+    if (toRead > firstPart) {
+        memcpy(buf + firstPart, &m_ringBuf[0], toRead - firstPart);
+    }
+    m_ringTail = (m_ringTail + toRead) % m_ringCap;
+    m_ringSize -= toRead;
+    return (int)toRead;
 }
 
-void AudioPlayer::streamLoop() {
+#ifdef __3DS__
+void AudioPlayer::downloadThreadEntry(void* arg) {
+    AudioPlayer* self = static_cast<AudioPlayer*>(arg);
+    if (self) self->downloadLoop();
+}
+
+void AudioPlayer::decodeThreadEntry(void* arg) {
+    AudioPlayer* self = static_cast<AudioPlayer*>(arg);
+    if (self) self->decodeLoop();
+}
+
+void AudioPlayer::downloadLoop() {
+    bool isLocal = (m_currentUrl.rfind("http://", 0) != 0 && m_currentUrl.rfind("https://", 0) != 0);
+
+    if (isLocal) {
+        FILE* f = fopen(m_currentUrl.c_str(), "rb");
+        if (f) {
+            if (m_initialSec.load() > 0 && m_totalSec.load() > 0) {
+                fseek(f, 0, SEEK_END);
+                long fLen = ftell(f);
+                long seekPos = (long)(((double)m_initialSec.load() / (double)m_totalSec.load()) * fLen);
+                fseek(f, seekPos, SEEK_SET);
+            }
+            uint8_t chunk[16384];
+            while (!m_stopRequested.load() && !g_appExiting.load()) {
+                size_t freeSpace = m_ringCap - m_ringSize.load();
+                if (freeSpace < sizeof(chunk)) {
+                    svcSleepThread(10000000); // 10ms wait for decoder
+                    continue;
+                }
+                size_t n = fread(chunk, 1, sizeof(chunk), f);
+                if (n == 0) break;
+
+                size_t firstPart = std::min(n, m_ringCap - m_ringHead);
+                memcpy(&m_ringBuf[m_ringHead], chunk, firstPart);
+                if (n > firstPart) {
+                    memcpy(&m_ringBuf[0], chunk + firstPart, n - firstPart);
+                }
+                m_ringHead = (m_ringHead + n) % m_ringCap;
+                m_ringSize += n;
+            }
+            fclose(f);
+        }
+        m_downloadFinished = true;
+        return;
+    }
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        m_downloadFinished = true;
+        return;
+    }
+
+    struct WriteContext {
+        AudioPlayer* player;
+    } ctx = { this };
+
+    auto writeCb = [](void* ptr, size_t size, size_t nmemb, void* userdata) -> size_t {
+        size_t totalBytes = size * nmemb;
+        WriteContext* wc = (WriteContext*)userdata;
+        AudioPlayer* p = wc->player;
+
+        if (p->m_stopRequested.load() || g_appExiting.load()) return 0;
+
+        const uint8_t* src = (const uint8_t*)ptr;
+        size_t remaining = totalBytes;
+        while (remaining > 0 && !p->m_stopRequested.load() && !g_appExiting.load()) {
+            size_t freeSpace = p->m_ringCap - p->m_ringSize.load();
+            if (freeSpace < 4096) {
+                svcSleepThread(10000000); // 10ms wait for decoder to consume
+                continue;
+            }
+            size_t toWrite = std::min(remaining, freeSpace);
+            size_t firstPart = std::min(toWrite, p->m_ringCap - p->m_ringHead);
+            memcpy(&p->m_ringBuf[p->m_ringHead], src, firstPart);
+            if (toWrite > firstPart) {
+                memcpy(&p->m_ringBuf[0], src + firstPart, toWrite - firstPart);
+            }
+            p->m_ringHead = (p->m_ringHead + toWrite) % p->m_ringCap;
+            p->m_ringSize += toWrite;
+            src += toWrite;
+            remaining -= toWrite;
+        }
+        return totalBytes;
+    };
+
+    auto xferInfoCb = [](void* clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) -> int {
+        (void)dltotal; (void)dlnow; (void)ultotal; (void)ulnow;
+        AudioPlayer* p = (AudioPlayer*)clientp;
+        if (p->m_stopRequested.load() || g_appExiting.load()) return 1;
+        return 0;
+    };
+
+    curl_easy_setopt(curl, CURLOPT_URL, m_currentUrl.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, (curl_write_callback)+writeCb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, (curl_xferinfo_callback)+xferInfoCb);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, this);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 16384L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
+
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "User-Agent: Plex3DS/1.0");
+    headers = curl_slist_append(headers, "Accept: */*");
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+    curl_easy_perform(curl);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    m_downloadFinished = true;
+}
+
+void AudioPlayer::decodeLoop() {
     mpg123_init();
     int err = 0;
     mpg123_handle* mh = mpg123_new(NULL, &err);
@@ -63,7 +194,7 @@ void AudioPlayer::streamLoop() {
     }
 
     const size_t NUM_BUFFERS = 4;
-    const size_t SAMPLES_PER_BUF = 8192; // ~185ms per buffer @ 44.1kHz (total ~740ms queue)
+    const size_t SAMPLES_PER_BUF = 8192; // ~185ms per buffer @ 44.1kHz (total ~740ms queue depth)
     const size_t BUF_BYTES = SAMPLES_PER_BUF * sizeof(int16_t) * 2;
     int16_t* audioBuf = (int16_t*)linearAlloc(BUF_BYTES * NUM_BUFFERS);
     if (!audioBuf) {
@@ -80,136 +211,85 @@ void AudioPlayer::streamLoop() {
         waveBuf[i].status = NDSP_WBUF_DONE;
     }
 
-    struct StreamContext {
-        AudioPlayer* player;
-        mpg123_handle* mh;
-        ndspWaveBuf* waveBuf;
-        int currentBuf;
-        bool formatSet;
-        size_t samplesPerBuf;
-        size_t bufBytes;
-        int channel;
-        uint64_t samplesPlayed;
-    } ctx = { this, mh, waveBuf, 0, false, SAMPLES_PER_BUF, BUF_BYTES, m_channel, 0 };
+    int currentBuf = 0;
+    bool formatSet = false;
+    uint64_t samplesPlayed = 0;
+    int channels = 2;
+    long curRate = 44100;
+    uint8_t feedChunk[16384];
 
-    auto writeCb = [](void* ptr, size_t size, size_t nmemb, void* userdata) -> size_t {
-        size_t totalBytes = size * nmemb;
-        StreamContext* sc = (StreamContext*)userdata;
-        if (sc->player->m_stopRequested.load() || g_appExiting.load()) {
-            return 0; // abort
-        }
+    // Wait until we have at least 64 KB pre-buffered or download finishes
+    while (m_ringSize.load() < 64 * 1024 && !m_downloadFinished.load() && !m_stopRequested.load() && !g_appExiting.load()) {
+        svcSleepThread(10000000); // 10ms
+    }
 
-        while (sc->player->m_isPaused.load()) {
-            if (sc->player->m_stopRequested.load() || g_appExiting.load()) return 0;
+    while (!m_stopRequested.load() && !g_appExiting.load()) {
+        while (m_isPaused.load()) {
+            if (m_stopRequested.load() || g_appExiting.load()) break;
             svcSleepThread(20000000); // 20ms
         }
+        if (m_stopRequested.load() || g_appExiting.load()) break;
 
-        int ret = mpg123_feed(sc->mh, (const unsigned char*)ptr, totalBytes);
-        if (ret != MPG123_OK && ret != MPG123_NEED_MORE) {
-            return totalBytes;
+        // Ensure next waveBuf is available
+        if (waveBuf[currentBuf].status != NDSP_WBUF_DONE) {
+            svcSleepThread(2000000); // 2ms
+            continue;
         }
 
-        while (!sc->player->m_stopRequested.load() && !g_appExiting.load()) {
-            if (sc->waveBuf[sc->currentBuf].status != NDSP_WBUF_DONE) {
-                svcSleepThread(2000000); // 2ms
-                continue;
+        size_t bytesDone = 0;
+        int readRet = mpg123_read(mh, (unsigned char*)waveBuf[currentBuf].data_pcm16, BUF_BYTES, &bytesDone);
+
+        if (readRet == MPG123_NEW_FORMAT || !formatSet) {
+            long rate = 44100;
+            int ch = 2, enc = 0;
+            if (mpg123_getformat(mh, &rate, &ch, &enc) == MPG123_OK) {
+                curRate = rate > 0 ? rate : 44100;
+                channels = ch;
+                ndspChnSetRate(m_channel, (float)curRate);
+                ndspChnSetFormat(m_channel, (channels == 2) ? NDSP_FORMAT_STEREO_PCM16 : NDSP_FORMAT_MONO_PCM16);
+                formatSet = true;
             }
+        }
 
-            size_t bytesDone = 0;
-            int readRet = mpg123_read(sc->mh, (unsigned char*)sc->waveBuf[sc->currentBuf].data_pcm16, sc->bufBytes, &bytesDone);
+        if (bytesDone > 0) {
+            size_t sampleFrameSize = sizeof(int16_t) * (channels == 1 ? 1 : 2);
+            size_t numSamples = bytesDone / sampleFrameSize;
+            samplesPlayed += numSamples;
+            m_currentSec = m_initialSec.load() + (int)(samplesPlayed / curRate);
 
-            if (!sc->formatSet) {
-                long rate = 44100;
-                int channels = 2, encoding = 0;
-                if (mpg123_getformat(sc->mh, &rate, &channels, &encoding) == MPG123_OK) {
-                    ndspChnSetRate(sc->channel, (float)rate);
-                    ndspChnSetFormat(sc->channel, (channels == 2) ? NDSP_FORMAT_STEREO_PCM16 : NDSP_FORMAT_MONO_PCM16);
-                    sc->formatSet = true;
+            waveBuf[currentBuf].nsamples = numSamples;
+            DSP_FlushDataCache(waveBuf[currentBuf].data_pcm16, bytesDone);
+            ndspChnWaveBufAdd(m_channel, &waveBuf[currentBuf]);
+            currentBuf = (currentBuf + 1) % NUM_BUFFERS;
+        }
+
+        // If mpg123 needs more data, feed it from the ring buffer
+        if (readRet == MPG123_NEED_MORE || bytesDone == 0) {
+            int n = readStream(feedChunk, sizeof(feedChunk));
+            if (n > 0) {
+                mpg123_feed(mh, feedChunk, (size_t)n);
+            } else if (n == 0) {
+                // EOF: ring buffer is empty and download has completed!
+                // Drain any final partial frame from mpg123
+                size_t finalBytes = 0;
+                mpg123_read(mh, (unsigned char*)waveBuf[currentBuf].data_pcm16, BUF_BYTES, &finalBytes);
+                if (finalBytes > 0) {
+                    size_t sampleFrameSize = sizeof(int16_t) * (channels == 1 ? 1 : 2);
+                    size_t numSamples = finalBytes / sampleFrameSize;
+                    samplesPlayed += numSamples;
+                    waveBuf[currentBuf].nsamples = numSamples;
+                    DSP_FlushDataCache(waveBuf[currentBuf].data_pcm16, finalBytes);
+                    ndspChnWaveBufAdd(m_channel, &waveBuf[currentBuf]);
                 }
-            }
-
-            if (bytesDone > 0) {
-                size_t numSamples = bytesDone / (sizeof(int16_t) * 2);
-                sc->samplesPlayed += numSamples;
-                long curRate = 44100;
-                int ch = 2, enc = 0;
-                if (mpg123_getformat(sc->mh, &curRate, &ch, &enc) != MPG123_OK || curRate <= 0) {
-                    curRate = 44100;
-                }
-                sc->player->m_currentSec = sc->player->m_initialSec.load() + (int)(sc->samplesPlayed / curRate);
-                sc->waveBuf[sc->currentBuf].nsamples = numSamples;
-                DSP_FlushDataCache(sc->waveBuf[sc->currentBuf].data_pcm16, bytesDone);
-                ndspChnWaveBufAdd(sc->channel, &sc->waveBuf[sc->currentBuf]);
-                sc->currentBuf = (sc->currentBuf + 1) % 4;
-            }
-
-            if (readRet == MPG123_NEED_MORE || bytesDone == 0) {
+                break; // Song stream completely finished!
+            } else {
+                // n < 0: stop requested
                 break;
             }
         }
-
-        return totalBytes;
-    };
-
-    bool isLocal = (m_currentUrl.rfind("http://", 0) != 0 && m_currentUrl.rfind("https://", 0) != 0);
-
-    if (isLocal) {
-        FILE* f = fopen(m_currentUrl.c_str(), "rb");
-        if (f) {
-            if (m_initialSec.load() > 0 && m_totalSec.load() > 0) {
-                fseek(f, 0, SEEK_END);
-                long fLen = ftell(f);
-                long seekPos = (long)(((double)m_initialSec.load() / (double)m_totalSec.load()) * fLen);
-                fseek(f, seekPos, SEEK_SET);
-            }
-            const size_t CHUNK_SIZE = 16384;
-            uint8_t readChunk[CHUNK_SIZE];
-            while (!m_stopRequested.load() && !g_appExiting.load()) {
-                while (m_isPaused.load()) {
-                    if (m_stopRequested.load() || g_appExiting.load()) break;
-                    svcSleepThread(20000000);
-                }
-                size_t n = fread(readChunk, 1, CHUNK_SIZE, f);
-                if (n == 0) break;
-                writeCb(readChunk, 1, n, &ctx);
-            }
-            fclose(f);
-        }
-    } else {
-        CURL* curl = curl_easy_init();
-        if (curl) {
-            auto xferInfoCb = [](void* clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) -> int {
-                (void)dltotal; (void)dlnow; (void)ultotal; (void)ulnow;
-                AudioPlayer* p = (AudioPlayer*)clientp;
-                if (p->m_stopRequested.load() || g_appExiting.load()) {
-                    return 1;
-                }
-                return 0;
-            };
-
-            curl_easy_setopt(curl, CURLOPT_URL, m_currentUrl.c_str());
-            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, (curl_write_callback)+writeCb);
-            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
-            curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, (curl_xferinfo_callback)+xferInfoCb);
-            curl_easy_setopt(curl, CURLOPT_XFERINFODATA, this);
-            curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-            curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-            curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 16384L);
-            curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
-            curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
-
-            struct curl_slist* headers = nullptr;
-            headers = curl_slist_append(headers, "User-Agent: Plex3DS/1.0");
-            headers = curl_slist_append(headers, "Accept: */*");
-            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-
-            curl_easy_perform(curl);
-
-            curl_slist_free_all(headers);
-            curl_easy_cleanup(curl);
-        }
     }
 
+    // Wait for remaining queued audio buffers to complete playing on hardware
     while (!m_stopRequested.load() && !g_appExiting.load()) {
         bool anyBusy = false;
         for (size_t i = 0; i < NUM_BUFFERS; i++) {
@@ -239,14 +319,30 @@ bool AudioPlayer::play(const std::string& audioUrl, int totalSec) {
     m_stopRequested = false;
     m_isPaused = false;
     m_isPlaying = true;
+    m_ringHead = 0;
+    m_ringTail = 0;
+    m_ringSize = 0;
+    m_downloadFinished = false;
 
 #ifdef __3DS__
-    m_thread = threadCreate(streamThreadEntry, this, 64 * 1024, 0x2A, -1, false);
-    if (!m_thread) {
-        m_thread = threadCreate(streamThreadEntry, this, 64 * 1024, 0x2A, -2, false);
-    }
-    if (!m_thread) {
+    m_ringBuf = (uint8_t*)linearAlloc(m_ringCap);
+    if (!m_ringBuf) {
         m_isPlaying = false;
+        return false;
+    }
+
+    m_downloadThread = threadCreate(downloadThreadEntry, this, 64 * 1024, 0x31, -2, false);
+    if (!m_downloadThread) {
+        m_downloadThread = threadCreate(downloadThreadEntry, this, 64 * 1024, 0x31, -1, false);
+    }
+
+    m_decodeThread = threadCreate(decodeThreadEntry, this, 64 * 1024, 0x2A, -1, false);
+    if (!m_decodeThread) {
+        m_decodeThread = threadCreate(decodeThreadEntry, this, 64 * 1024, 0x2A, -2, false);
+    }
+
+    if (!m_downloadThread || !m_decodeThread) {
+        stop();
         return false;
     }
 #endif
@@ -272,18 +368,27 @@ void AudioPlayer::stop() {
     m_isPaused = false;
 
 #ifdef __3DS__
-    if (m_thread) {
-        threadJoin(m_thread, 1000000000ULL);
-        threadFree(m_thread);
-        m_thread = nullptr;
+    if (m_decodeThread) {
+        threadJoin(m_decodeThread, 1000000000ULL);
+        threadFree(m_decodeThread);
+        m_decodeThread = nullptr;
+    }
+    if (m_downloadThread) {
+        threadJoin(m_downloadThread, 1000000000ULL);
+        threadFree(m_downloadThread);
+        m_downloadThread = nullptr;
     }
     ndspChnReset(m_channel);
+    if (m_ringBuf) {
+        linearFree(m_ringBuf);
+        m_ringBuf = nullptr;
+    }
 #endif
     m_isPlaying = false;
 }
 
 void AudioPlayer::update() {
-    // Thread manages playback autonomously
+    // Threads manage download and decode autonomously
 }
 
 void AudioPlayer::seekTo(int targetSeconds) {
@@ -308,34 +413,9 @@ void AudioPlayer::seekTo(int targetSeconds) {
         }
     }
 
-    // Stop current stream thread
-    m_stopRequested = true;
-#ifdef __3DS__
-    if (m_thread) {
-        threadJoin(m_thread, 1000000000ULL);
-        threadFree(m_thread);
-        m_thread = nullptr;
-    }
-    ndspChnReset(m_channel);
-#endif
-
-    m_currentUrl = url;
-    m_totalSec = total;
+    play(url, total);
     m_initialSec = targetSeconds;
     m_currentSec = targetSeconds;
-    m_stopRequested = false;
-    m_isPaused = false;
-    m_isPlaying = true;
-
-#ifdef __3DS__
-    m_thread = threadCreate(streamThreadEntry, this, 64 * 1024, 0x2A, -1, false);
-    if (!m_thread) {
-        m_thread = threadCreate(streamThreadEntry, this, 64 * 1024, 0x2A, -2, false);
-    }
-    if (!m_thread) {
-        m_isPlaying = false;
-    }
-#endif
 }
 
 void AudioPlayer::seek(int deltaSeconds) {

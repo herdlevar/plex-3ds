@@ -98,7 +98,7 @@ def main():
     print("    Option B: Open the [FTPD] app on your 3DS")
     print("\n[*] Listening... (Press Ctrl+C to cancel)")
 
-    for _ in range(300): # 150 seconds timeout
+    for _ in range(3000): # 15 minutes timeout
         if check_netloader_broadcast():
             deploy_via_netloader()
             return

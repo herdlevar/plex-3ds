@@ -42,10 +42,22 @@ private:
     std::atomic<int> m_totalSec{0};
     bool m_initialized = false;
     int m_channel = 0;
+    // Ring buffer for streaming
+    uint8_t* m_ringBuf = nullptr;
+    size_t m_ringCap = 512 * 1024; // 512 KB (~15-20s cushion)
+    size_t m_ringHead = 0;
+    size_t m_ringTail = 0;
+    std::atomic<size_t> m_ringSize{0};
+    std::atomic<bool> m_downloadFinished{false};
+
+    int readStream(uint8_t* buf, int maxBytes);
 
 #ifdef __3DS__
-    Thread m_thread = nullptr;
-    static void streamThreadEntry(void* arg);
-    void streamLoop();
+    Thread m_downloadThread = nullptr;
+    Thread m_decodeThread = nullptr;
+    static void downloadThreadEntry(void* arg);
+    static void decodeThreadEntry(void* arg);
+    void downloadLoop();
+    void decodeLoop();
 #endif
 };
