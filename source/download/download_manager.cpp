@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
 
 static const std::string BASE_DOWNLOAD_DIR = "sdmc:/3ds/plex-3ds/downloads";
 static const std::string VIDEO_DOWNLOAD_DIR = "sdmc:/3ds/plex-3ds/downloads/videos";
@@ -366,18 +367,42 @@ void DownloadManager::downloadLoop() {
             std::lock_guard<std::mutex> lock(mgr->m_progressMutex);
             mgr->m_progress.bytesDownloaded = (int64_t)dlnow;
             mgr->m_progress.totalBytes = (int64_t)dltotal;
+
+            std::string qInfo = "";
+            if (mgr->m_progress.queueCount > 1) {
+                qInfo = "(" + std::to_string(mgr->m_progress.queueIndex) + "/" + std::to_string(mgr->m_progress.queueCount) + ") ";
+            }
+
             if (dltotal > 0) {
-                mgr->m_progress.percent = (int)((dlnow * 100) / dltotal);
-                int mbNow = (int)(dlnow / (1024 * 1024));
-                int mbTot = (int)(dltotal / (1024 * 1024));
-                std::string qInfo = "";
-                if (mgr->m_progress.queueCount > 1) {
-                    qInfo = "(" + std::to_string(mgr->m_progress.queueIndex) + "/" + std::to_string(mgr->m_progress.queueCount) + ") ";
-                }
-                mgr->m_progress.statusText = qInfo + std::to_string(mbNow) + " / " + std::to_string(mbTot) + " MB (" + std::to_string(mgr->m_progress.percent) + "%)";
+                mgr->m_progress.percent = std::clamp((int)((dlnow * 100) / dltotal), 0, 100);
+                double mbNow = (double)dlnow / (1024.0 * 1024.0);
+                double mbTot = (double)dltotal / (1024.0 * 1024.0);
+                char buf[64];
+                snprintf(buf, sizeof(buf), "%.1f / %.1f MB (%d%%)", mbNow, mbTot, mgr->m_progress.percent);
+                mgr->m_progress.statusText = qInfo + buf;
             } else {
-                int mbNow = (int)(dlnow / (1024 * 1024));
-                mgr->m_progress.statusText = std::to_string(mbNow) + " MB downloaded";
+                // If Content-Length is missing (e.g. chunked streaming transcode), estimate from duration
+                int64_t estTotal = 0;
+                if (mgr->m_currentItem.durationMs > 0) {
+                    if (mgr->m_currentItem.type == MediaType::TRACK) {
+                        estTotal = (mgr->m_currentItem.durationMs / 1000) * 16000; // ~128kbps MP3
+                    } else {
+                        estTotal = (mgr->m_currentItem.durationMs / 1000) * 141000; // ~1128kbps Video
+                    }
+                }
+                if (estTotal > 0 && dlnow > 0) {
+                    mgr->m_progress.percent = std::clamp((int)((dlnow * 100) / estTotal), 0, 99);
+                } else {
+                    mgr->m_progress.percent = 0;
+                }
+                double mbNow = (double)dlnow / (1024.0 * 1024.0);
+                char buf[64];
+                if (mbNow >= 1.0) {
+                    snprintf(buf, sizeof(buf), "%.1f MB (%d%%)", mbNow, mgr->m_progress.percent);
+                } else {
+                    snprintf(buf, sizeof(buf), "%d KB (%d%%)", (int)(dlnow / 1024), mgr->m_progress.percent);
+                }
+                mgr->m_progress.statusText = qInfo + buf;
             }
             return 0;
         };
@@ -392,6 +417,8 @@ void DownloadManager::downloadLoop() {
         curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 65536L);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
+        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 512L);
+        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 30L);
 
         static const char* CA_BUNDLE_PATH = "sdmc:/3ds/plex-3ds/cacert.pem";
         FILE* caF = fopen(CA_BUNDLE_PATH, "rb");
@@ -467,7 +494,7 @@ void DownloadManager::downloadLoop() {
     {
         std::lock_guard<std::mutex> lock(m_progressMutex);
         m_progress.active = false;
-        m_progress.completed = !m_cancelRequested.load();
+        m_progress.completed = !m_cancelRequested.load() && !m_progress.failed;
     }
 }
 #endif

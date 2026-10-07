@@ -486,8 +486,11 @@ bool PlexAPI::getItems(const PlexServer& server, const std::string& keyOrSection
                     if (!dur) dur = cJSON_GetObjectItem(part, "duration");
                     cJSON* pk = cJSON_GetObjectItem(part, "key");
                     cJSON* cont = cJSON_GetObjectItem(part, "container");
+                    if (!cont) cont = cJSON_GetObjectItem(med, "container");
+                    cJSON* aCodec = cJSON_GetObjectItem(med, "audioCodec");
                     if (pk && pk->valuestring) item.partKey = pk->valuestring;
                     if (cont && cont->valuestring) item.container = cont->valuestring;
+                    else if (aCodec && aCodec->valuestring) item.container = aCodec->valuestring;
 
                     cJSON* streamArr = cJSON_GetObjectItem(part, "Stream");
                     if (streamArr && cJSON_IsArray(streamArr)) {
@@ -547,10 +550,14 @@ std::string PlexAPI::buildPosterUrl(const PlexServer& server, const std::string&
 std::string PlexAPI::buildTranscodeUrl(const PlexServer& server, const PlexMediaItem& item, const AppConfig& config) const {
     if (server.selectedUri.empty()) return "";
 
-    std::string encodedKey = urlEncode(item.key);
+    std::string pathKey = item.key.empty() ? ("/library/metadata/" + item.ratingKey) : item.key;
+    std::string encodedKey = urlEncode(pathKey);
+    std::string clientId = m_clientIdentifier.empty() ? "Plex3DS-Client-001" : m_clientIdentifier;
 
     if (item.type == MediaType::TRACK) {
-        if (!item.partKey.empty() && item.container == "mp3") {
+        bool isMp3 = (item.container == "mp3" ||
+                     (item.partKey.length() >= 4 && item.partKey.substr(item.partKey.length() - 4) == ".mp3"));
+        if (!item.partKey.empty() && isMp3) {
             return server.selectedUri + item.partKey + "?X-Plex-Token=" + server.accessToken;
         }
 
@@ -569,7 +576,7 @@ std::string PlexAPI::buildTranscodeUrl(const PlexServer& server, const PlexMedia
             + "&mediaIndex=0&partIndex=0&protocol=http&fastSeek=1&directPlay=0&directStream=0&audioQuality=60"
             + "&location=lan&session=" + sessionId
             + "&X-Plex-Token=" + server.accessToken
-            + "&X-Plex-Client-Identifier=Plex3DS-Client-001"
+            + "&X-Plex-Client-Identifier=" + clientId
             + "&X-Plex-Client-Profile-Name=Generic"
             + "&X-Plex-Client-Profile-Extra=" + profileExtraEncoded;
 
@@ -583,7 +590,7 @@ std::string PlexAPI::buildTranscodeUrl(const PlexServer& server, const PlexMedia
             + "&mediaIndex=0&partIndex=0&protocol=http&fastSeek=1&directPlay=0&directStream=0&audioQuality=60"
             + "&location=lan&session=" + sessionId
             + "&X-Plex-Token=" + server.accessToken
-            + "&X-Plex-Client-Identifier=Plex3DS-Client-001"
+            + "&X-Plex-Client-Identifier=" + clientId
             + "&X-Plex-Client-Profile-Name=Generic"
             + "&X-Plex-Client-Profile-Extra=" + profileExtraEncoded;
         return streamUrl;
@@ -617,7 +624,7 @@ std::string PlexAPI::buildTranscodeUrl(const PlexServer& server, const PlexMedia
         + "&session=" + sessionId
         + (!subParam.empty() ? ("&" + subParam) : "")
         + "&X-Plex-Token=" + server.accessToken
-        + "&X-Plex-Client-Identifier=Plex3DS-Client-001"
+        + "&X-Plex-Client-Identifier=" + clientId
         + "&X-Plex-Client-Profile-Name=Generic"
         + "&X-Plex-Client-Profile-Extra=add-transcode-target(type%3DvideoProfile%26context%3Dstreaming%26protocol%3Dhttp%26container%3Dmkv%26videoCodec%3Dh264%26audioCodec%3Daac)";
 
@@ -638,7 +645,7 @@ std::string PlexAPI::buildTranscodeUrl(const PlexServer& server, const PlexMedia
         + "&session=" + sessionId
         + (!subParam.empty() ? ("&" + subParam) : "")
         + "&X-Plex-Token=" + server.accessToken
-        + "&X-Plex-Client-Identifier=Plex3DS-Client-001"
+        + "&X-Plex-Client-Identifier=" + clientId
         + "&X-Plex-Client-Profile-Name=Generic"
         + "&X-Plex-Client-Profile-Extra=add-transcode-target(type%3DvideoProfile%26context%3Dstreaming%26protocol%3Dhttp%26container%3Dmkv%26videoCodec%3Dh264%26audioCodec%3Daac)";
 

@@ -690,8 +690,8 @@ void UIRenderer::renderBottomScreen(AppState state,
             if (isDownloadingCurrent) {
                 // Download progress bar
                 C2D_DrawRectSolid(15, 122, 0.5f, 290, 8, COLOR_DARK_BG);
-                C2D_DrawRectSolid(15, 122, 0.5f, (std::clamp(dlPercent, 0, 100) / 100.0f) * 290.0f, 8, COLOR_PLEX_ORANGE);
-                drawText(15, 134, 0.42f, COLOR_PLEX_ORANGE, "Downloading: " + std::to_string(dlPercent) + "%");
+                std::string progText = dlBadge.empty() ? ("Downloading: " + std::to_string(dlPercent) + "%") : dlBadge;
+                drawText(15, 134, 0.42f, COLOR_PLEX_ORANGE, progText);
 
                 drawButton(15, 150, 140, 34, "Cancel DL");
                 drawButton(165, 150, 140, 34, "Back");

@@ -804,12 +804,11 @@ int main(int argc, char* argv[]) {
 
     g_downloadManager.init();
 
-    PlexAPI api(g_config.clientIdentifier);
-
     // Try loading saved configuration
     loadConfig();
     g_downloadManager.setClientIdentifier(g_config.clientIdentifier);
     videoPlayer.setClientIdentifier(g_config.clientIdentifier);
+    PlexAPI api(g_config.clientIdentifier);
     loadResume();
 
     // If username is empty but token is present, try fetching user info
@@ -1030,6 +1029,9 @@ int main(int argc, char* argv[]) {
         // Monitor background downloads
         static bool lastDlActive = false;
         auto dlProg = g_downloadManager.getProgress();
+        if (dlProg.active) {
+            g_statusMsg = "DL: " + dlProg.title + " - " + dlProg.statusText;
+        }
         if (lastDlActive && !dlProg.active) {
             if (dlProg.completed) {
                 g_statusMsg = "Downloaded: " + dlProg.title;
@@ -1174,7 +1176,9 @@ int main(int argc, char* argv[]) {
 
         std::string dlBadge = "";
         if (dlProg.active) {
-            if (dlProg.queueCount > 1) {
+            if (!dlProg.statusText.empty()) {
+                dlBadge = "DL: " + dlProg.statusText;
+            } else if (dlProg.queueCount > 1) {
                 dlBadge = "DL (" + std::to_string(dlProg.queueIndex) + "/" + std::to_string(dlProg.queueCount) + "): " + std::to_string(dlProg.percent) + "%";
             } else {
                 dlBadge = "DL: " + std::to_string(dlProg.percent) + "%";

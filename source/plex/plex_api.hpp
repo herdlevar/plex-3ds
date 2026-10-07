@@ -8,6 +8,7 @@
 class PlexAPI {
 public:
     PlexAPI(const std::string& clientIdentifier);
+    void setClientIdentifier(const std::string& id) { m_clientIdentifier = id; }
 
     // Authentication (Plex PIN & Direct Login)
     bool requestPin(std::string& outPinId, std::string& outCode);
