@@ -454,7 +454,10 @@ bool PlexAPI::getItems(const PlexServer& server, const std::string& keyOrSection
             cJSON* gpTitle = cJSON_GetObjectItem(m, "grandparentTitle");
             cJSON* viewOffset = cJSON_GetObjectItem(m, "viewOffset");
 
-            if (rk) item.ratingKey = rk->valuestring ? rk->valuestring : "";
+            if (rk) {
+                if (rk->valuestring) item.ratingKey = rk->valuestring;
+                else if (cJSON_IsNumber(rk)) item.ratingKey = std::to_string((int64_t)rk->valuedouble);
+            }
             if (k) item.key = k->valuestring ? k->valuestring : "";
             if (title) item.title = title->valuestring ? title->valuestring : "Untitled";
             if (summary) item.summary = summary->valuestring ? summary->valuestring : "";

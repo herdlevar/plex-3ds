@@ -644,9 +644,15 @@ void UIRenderer::renderBottomScreen(AppState state,
         }
         if (items.empty()) {
             if (listTitle == "Downloads") {
-                drawText(20, 75, 0.5f, COLOR_WHITE, "No offline downloads found.");
-                drawText(20, 100, 0.42f, COLOR_GRAY, "Download media from your server");
-                drawText(20, 120, 0.42f, COLOR_GRAY, "to enjoy pocket listening & offline playback.");
+                if (!dlBadge.empty()) {
+                    drawText(20, 65, 0.52f, COLOR_PLEX_ORANGE, "Downloading in progress...");
+                    drawText(20, 92, 0.44f, COLOR_WHITE, dlBadge);
+                    drawText(20, 118, 0.38f, COLOR_GRAY, "Items appear here as each finishes.");
+                } else {
+                    drawText(20, 75, 0.5f, COLOR_WHITE, "No offline downloads found.");
+                    drawText(20, 100, 0.42f, COLOR_GRAY, "Download media from your server");
+                    drawText(20, 120, 0.42f, COLOR_GRAY, "to enjoy pocket listening & offline playback.");
+                }
                 drawButton(15, 160, 290, 36, "< Back (B)", false);
             } else {
                 drawText(20, 80, 0.5f, COLOR_GRAY, "No items found.");

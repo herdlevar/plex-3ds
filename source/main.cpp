@@ -1023,17 +1023,40 @@ int main(int argc, char* argv[]) {
 
         // Monitor background downloads
         static bool lastDlActive = false;
+        static int lastDlCompletedCount = 0;
         auto dlProg = g_downloadManager.getProgress();
         if (dlProg.active) {
             g_statusMsg = "DL: " + dlProg.title + " - " + dlProg.statusText;
         }
+
+        if (dlProg.completedCount != lastDlCompletedCount) {
+            lastDlCompletedCount = dlProg.completedCount;
+            if (g_currentNavTitle == "Downloads" || g_currentNavKey == "__offline__") {
+                g_items = g_downloadManager.getDownloadedItems();
+                int64_t freeBytes = g_downloadManager.getSDFreeSpaceBytes();
+                int freeGB = (int)(freeBytes / (1024 * 1024 * 1024));
+                g_statusMsg = "Downloads (" + std::to_string(g_items.size()) + " items, " + std::to_string(freeGB) + " GB free)";
+            } else {
+                for (auto& it : g_items) {
+                    if (g_downloadManager.isDownloaded(it.ratingKey)) {
+                        it.isOffline = true;
+                        it.localFilePath = g_downloadManager.getLocalFilePath(it.ratingKey);
+                    }
+                }
+            }
+        }
+
         if (lastDlActive && !dlProg.active) {
             if (dlProg.completed) {
                 g_statusMsg = "Downloaded: " + dlProg.title;
-                for (auto& it : g_items) {
-                    if (it.ratingKey == dlProg.ratingKey) {
-                        it.isOffline = true;
-                        it.localFilePath = g_downloadManager.getLocalFilePath(it.ratingKey);
+                if (g_currentNavTitle == "Downloads" || g_currentNavKey == "__offline__") {
+                    g_items = g_downloadManager.getDownloadedItems();
+                } else {
+                    for (auto& it : g_items) {
+                        if (it.ratingKey == dlProg.ratingKey) {
+                            it.isOffline = true;
+                            it.localFilePath = g_downloadManager.getLocalFilePath(it.ratingKey);
+                        }
                     }
                 }
             } else if (dlProg.failed) {

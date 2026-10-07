@@ -133,6 +133,22 @@ std::vector<PlexMediaItem> DownloadManager::getDownloadedItems() {
                 cJSON* index = cJSON_GetObjectItem(root, "index");
 
                 std::string lp = (localPath && localPath->valuestring) ? localPath->valuestring : "";
+                if (lp.empty() || access(lp.c_str(), R_OK) != 0) {
+                    std::string keyBase = fname.substr(0, fname.length() - 5);
+                    std::string cand1 = MUSIC_DOWNLOAD_DIR + "/" + keyBase + ".mp3";
+                    std::string cand2 = VIDEO_DOWNLOAD_DIR + "/" + keyBase + ".mkv";
+                    std::string cand3 = BASE_DOWNLOAD_DIR + "/" + keyBase + ".mp3";
+                    std::string cand4 = BASE_DOWNLOAD_DIR + "/temp_" + keyBase + ".mp3";
+                    std::string cand5 = MUSIC_DOWNLOAD_DIR + "/.temp_" + keyBase + ".mp3";
+                    std::string cand6 = VIDEO_DOWNLOAD_DIR + "/.temp_" + keyBase + ".mkv";
+                    if (access(cand1.c_str(), R_OK) == 0) lp = cand1;
+                    else if (access(cand2.c_str(), R_OK) == 0) lp = cand2;
+                    else if (access(cand3.c_str(), R_OK) == 0) lp = cand3;
+                    else if (access(cand4.c_str(), R_OK) == 0) lp = cand4;
+                    else if (access(cand5.c_str(), R_OK) == 0) lp = cand5;
+                    else if (access(cand6.c_str(), R_OK) == 0) lp = cand6;
+                }
+
                 // Verify local media file exists and has valid content (> 4KB)
                 FILE* mediaFile = fopen(lp.c_str(), "rb");
                 if (mediaFile) {
@@ -176,6 +192,49 @@ std::vector<PlexMediaItem> DownloadManager::getDownloadedItems() {
         }
     }
     closedir(dir);
+
+    // Scan directories for any media files missing meta json files
+    auto scanDirForOrphans = [&](const std::string& dirPath, MediaType mType, const std::string& ext) {
+        DIR* d = opendir(dirPath.c_str());
+        if (!d) return;
+        struct dirent* e;
+        while ((e = readdir(d)) != nullptr) {
+            std::string name = e->d_name;
+            if (name.length() > ext.length() && name.rfind(ext) == name.length() - ext.length()) {
+                std::string fullPath = dirPath + "/" + name;
+                bool alreadyIn = false;
+                for (const auto& existing : items) {
+                    if (existing.localFilePath == fullPath) {
+                        alreadyIn = true;
+                        break;
+                    }
+                }
+                if (!alreadyIn) {
+                    struct stat st;
+                    if (stat(fullPath.c_str(), &st) == 0 && st.st_size > 4096) {
+                        std::string base = name.substr(0, name.length() - ext.length());
+                        if (base.rfind(".temp_", 0) == 0) base = base.substr(6);
+                        if (base.rfind("temp_", 0) == 0) base = base.substr(5);
+                        PlexMediaItem it;
+                        it.ratingKey = base;
+                        it.title = base;
+                        it.type = mType;
+                        it.isOffline = true;
+                        it.localFilePath = fullPath;
+                        it.partKey = fullPath;
+                        it.key = fullPath;
+                        it.localFileSize = st.st_size;
+                        items.push_back(it);
+                    }
+                }
+            }
+        }
+        closedir(d);
+    };
+
+    scanDirForOrphans(MUSIC_DOWNLOAD_DIR, MediaType::TRACK, ".mp3");
+    scanDirForOrphans(VIDEO_DOWNLOAD_DIR, MediaType::MOVIE, ".mkv");
+    scanDirForOrphans(BASE_DOWNLOAD_DIR, MediaType::TRACK, ".mp3");
     return items;
 }
 
@@ -329,9 +388,8 @@ void DownloadManager::downloadLoop() {
         std::string ext = (current.item.type == MediaType::TRACK) ? ".mp3" : ".mkv";
         std::string folder = (current.item.type == MediaType::TRACK) ? MUSIC_DOWNLOAD_DIR : VIDEO_DOWNLOAD_DIR;
         std::string finalPath = folder + "/" + safeKey + ext;
-        std::string tempPath = folder + "/.temp_" + safeKey + ext;
 
-        FILE* outFile = fopen(tempPath.c_str(), "wb");
+        FILE* outFile = fopen(finalPath.c_str(), "wb");
         if (!outFile) {
             std::lock_guard<std::mutex> lock(m_progressMutex);
             m_progress.statusText = "Cannot create file on SD";
@@ -342,7 +400,7 @@ void DownloadManager::downloadLoop() {
         CURL* curl = curl_easy_init();
         if (!curl) {
             fclose(outFile);
-            remove(tempPath.c_str());
+            remove(finalPath.c_str());
             std::lock_guard<std::mutex> lock(m_progressMutex);
             m_progress.statusText = "Failed to initialize curl";
             m_progress.failed = true;
@@ -475,9 +533,6 @@ void DownloadManager::downloadLoop() {
         fclose(outFile);
 
         if (res == CURLE_OK && !m_cancelRequested.load()) {
-            remove(finalPath.c_str());
-            rename(tempPath.c_str(), finalPath.c_str());
-
             int64_t fileSize = 0;
             struct stat st;
             if (stat(finalPath.c_str(), &st) == 0) {
@@ -486,6 +541,7 @@ void DownloadManager::downloadLoop() {
 
             if (fileSize > 4096) {
                 saveMetadata(current.item, finalPath, fileSize);
+                m_completedCount++;
                 std::lock_guard<std::mutex> lock(m_progressMutex);
                 m_progress.statusText = "Saved: " + current.item.title;
             } else {
@@ -494,7 +550,7 @@ void DownloadManager::downloadLoop() {
                 m_progress.statusText = "Download failed (corrupt): " + current.item.title;
             }
         } else {
-            remove(tempPath.c_str());
+            remove(finalPath.c_str());
             if (m_cancelRequested.load()) {
                 std::lock_guard<std::mutex> lock(m_progressMutex);
                 m_progress.statusText = "Cancelled";
@@ -612,6 +668,7 @@ void DownloadManager::cancelDownload() {
 
 DownloadProgress DownloadManager::getProgress() {
     std::lock_guard<std::mutex> lock(m_progressMutex);
+    m_progress.completedCount = m_completedCount.load();
     return m_progress;
 }
 

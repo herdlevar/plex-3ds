@@ -22,6 +22,7 @@ struct DownloadProgress {
     bool failed = false;
     int queueCount = 0;
     int queueIndex = 0;
+    int completedCount = 0;
 };
 
 struct QueuedDownload {
@@ -61,6 +62,7 @@ private:
     std::string m_clientIdentifier;
     std::atomic<bool> m_isDownloading{false};
     std::atomic<bool> m_cancelRequested{false};
+    std::atomic<int> m_completedCount{0};
 
     DownloadProgress m_progress;
     std::mutex m_progressMutex;
