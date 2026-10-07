@@ -38,6 +38,9 @@ Plex3DS offloads heavy media transcoding to your Plex Media Server, delivering l
 
 * **💾 Offline Media Downloads (Zero-Wi-Fi Playback):**
   * Download TV episodes, movies, and music tracks directly to your SD card (`sdmc:/3ds/plex-3ds/downloads/`).
+  * **Album & Season Batch Downloads:** Dedicated `[DL (Y)]` touch buttons and `(Y)` shortcut let you download an entire music album or TV show season with one tap/press.
+  * **"DL All" Container Button:** Inside an album or season tracklist, tap `[DL All (Y)]` in the header or press `(Y)` to queue all remaining tracks/episodes.
+  * **Sequential Background Queue:** Multi-item downloads run automatically in the background without UI lag, showing live progress (`DL (3/12): 45%`) and skipping files already downloaded.
   * **100% Offline Access:** Press `(L)` or tap `[Downloads (L)]` on the server selection or sign-in screens to access your downloaded library at any time—even with 0% Wi-Fi or no internet connection.
   * If launched offline with downloaded media on SD, Plex3DS automatically opens your offline library.
   * Full path traversal protection, background download progress tracking, and automatic cleanup of partial files.
@@ -85,7 +88,9 @@ Plex3DS solves this with two complementary systems:
 | **A** or **Touch Item** | Select / Open item details / Connect to server |
 | **B** | Return to previous screen / Return from Downloads |
 | **X** | Remove selected server (on Server Select) or delete downloaded item (in Downloads) |
-| **Y** | Sync servers from Plex account |
+| **Y** | **Download Album / Season / Movie** (in Item List), **Download All** (inside album/season), or Sync servers (on Server Select) |
+| **Touch [DL (Y)]** | Download highlighted album or TV season directly from the list |
+| **Touch [DL All (Y)]** | Queue all tracks/episodes when viewing an album or season |
 | **SELECT** | Switch to Plex Account / Sign-In screen |
 
 ### Media Detail View

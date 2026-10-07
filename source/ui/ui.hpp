@@ -31,7 +31,9 @@ enum TouchAction {
     TOUCH_AUTH_REFRESH_PIN = 2103,
     TOUCH_AUTH_DOWNLOADS = 2104,
 
-    TOUCH_ITEM_BACK = 3001
+    TOUCH_ITEM_BACK = 3001,
+    TOUCH_ITEM_DOWNLOAD_ALL = 3002,
+    TOUCH_ITEM_CONTAINER_DL_BASE = 4000
 };
 
 class UIRenderer {
@@ -89,7 +91,7 @@ public:
     void renderBlankBottomScreen();
 
     // Touch Interaction
-    int handleTouch(AppState state, int touchX, int touchY, int itemCount, bool hasNowPlaying = false, bool isLoggedIn = false, bool hasServers = false);
+    int handleTouch(AppState state, int touchX, int touchY, int itemCount, bool hasNowPlaying = false, bool isLoggedIn = false, bool hasServers = false, const std::vector<PlexMediaItem>* items = nullptr, int scrollOffset = 0, const std::string& listTitle = "");
 
 private:
     bool m_initialized = false;

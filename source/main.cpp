@@ -233,6 +233,74 @@ static void openDownloadsView(UIRenderer& ui) {
     g_statusMsg = "Downloads (" + std::to_string(g_items.size()) + " items, " + std::to_string(freeGB) + " GB free)";
 }
 
+static void downloadSingleItem(const PlexMediaItem& item, const PlexServer& server, const PlexAPI& api) {
+    if (g_downloadManager.isDownloaded(item.ratingKey)) {
+        g_statusMsg = item.title + " is already downloaded";
+        return;
+    }
+    std::string dlUrl = api.buildTranscodeUrl(server, item, g_config);
+    if (!dlUrl.empty()) {
+        std::vector<std::pair<PlexMediaItem, std::string>> list;
+        list.push_back({item, dlUrl});
+        g_downloadManager.queueDownloads(list);
+        g_statusMsg = "Downloading: " + item.title;
+    } else {
+        g_statusMsg = "Failed to build download URL";
+    }
+}
+
+static void downloadContainer(const PlexMediaItem& containerItem, const PlexServer& server, const PlexAPI& api, UIRenderer& ui) {
+    g_statusMsg = "Fetching " + containerItem.title + " items...";
+    ui.beginFrame();
+    ui.renderTopScreen(g_state, g_hasNowPlaying ? &g_nowPlayingItem : nullptr, g_hasNowPlaying, nullptr, g_statusMsg, g_pVideoPlayer, g_pAudioPlayer, g_config.username, !g_config.authToken.empty(), g_pinCode);
+    ui.endFrame();
+
+    std::vector<PlexMediaItem> childItems;
+    if (!const_cast<PlexAPI&>(api).getItems(server, containerItem.key, childItems, 0, 100)) {
+        g_statusMsg = "Failed to fetch items for " + containerItem.title;
+        return;
+    }
+
+    std::vector<std::pair<PlexMediaItem, std::string>> queueList;
+    for (const auto& child : childItems) {
+        if (!child.ratingKey.empty() && child.key != "__LOAD_MORE__" && !g_downloadManager.isDownloaded(child.ratingKey)) {
+            std::string dlUrl = api.buildTranscodeUrl(server, child, g_config);
+            if (!dlUrl.empty()) {
+                queueList.push_back({child, dlUrl});
+            }
+        }
+    }
+
+    if (queueList.empty()) {
+        g_statusMsg = containerItem.title + " is already downloaded!";
+        return;
+    }
+
+    int queued = g_downloadManager.queueDownloads(queueList);
+    std::string unit = (containerItem.type == MediaType::ALBUM) ? "tracks" : "episodes";
+    g_statusMsg = "Queued " + std::to_string(queued) + " " + unit + " from " + containerItem.title;
+}
+
+static void downloadCurrentList(const PlexServer& server, const PlexAPI& api, const std::string& title) {
+    std::vector<std::pair<PlexMediaItem, std::string>> queueList;
+    for (const auto& child : g_items) {
+        if (!child.ratingKey.empty() && child.key != "__LOAD_MORE__" && !g_downloadManager.isDownloaded(child.ratingKey)) {
+            std::string dlUrl = api.buildTranscodeUrl(server, child, g_config);
+            if (!dlUrl.empty()) {
+                queueList.push_back({child, dlUrl});
+            }
+        }
+    }
+
+    if (queueList.empty()) {
+        g_statusMsg = title + " is already downloaded!";
+        return;
+    }
+
+    int queued = g_downloadManager.queueDownloads(queueList);
+    g_statusMsg = "Queued " + std::to_string(queued) + " items from " + title;
+}
+
 static void playMediaItem(const PlexMediaItem& item, AudioPlayer& audioPlayer, VideoPlayer& videoPlayer, const PlexAPI& api, int64_t startOffsetMs = 0) {
     g_nowPlayingItem = item;
     g_nowPlayingItem.viewOffsetMs = startOffsetMs;
@@ -722,9 +790,9 @@ int main(int argc, char* argv[]) {
     VideoPlayer videoPlayer;
     videoPlayer.init();
 
-#ifdef __3DS__
     g_pAudioPlayer = &audioPlayer;
     g_pVideoPlayer = &videoPlayer;
+#ifdef __3DS__
     aptHook(&g_aptCookie, onAptHook, nullptr);
 #endif
 
@@ -1098,7 +1166,11 @@ int main(int argc, char* argv[]) {
 
         std::string dlBadge = "";
         if (dlProg.active) {
-            dlBadge = "DL: " + std::to_string(dlProg.percent) + "%";
+            if (dlProg.queueCount > 1) {
+                dlBadge = "DL (" + std::to_string(dlProg.queueIndex) + "/" + std::to_string(dlProg.queueCount) + "): " + std::to_string(dlProg.percent) + "%";
+            } else {
+                dlBadge = "DL: " + std::to_string(dlProg.percent) + "%";
+            }
         }
 
         bool isCurrentItemDownloaded = false;
@@ -1627,9 +1699,18 @@ int main(int argc, char* argv[]) {
                 }
             }
             if (kDown & KEY_TOUCH) {
-                int clicked = ui.handleTouch(g_state, touch.px, touch.py, (int)g_items.size(), g_hasNowPlaying);
+                int clicked = ui.handleTouch(g_state, touch.px, touch.py, (int)g_items.size(), g_hasNowPlaying, !g_config.authToken.empty(), !g_servers.empty(), &g_items, g_scrollOffset, g_currentNavTitle);
                 if (clicked == TOUCH_ITEM_BACK) {
                     kDown |= KEY_B;
+                } else if (clicked == TOUCH_ITEM_DOWNLOAD_ALL) {
+                    if (!g_servers.empty() && g_selectedServerIdx >= 0 && g_selectedServerIdx < (int)g_servers.size()) {
+                        downloadCurrentList(g_servers[g_selectedServerIdx], api, g_currentNavTitle);
+                    }
+                } else if (clicked >= TOUCH_ITEM_CONTAINER_DL_BASE) {
+                    int itemIdx = g_scrollOffset + (clicked - TOUCH_ITEM_CONTAINER_DL_BASE);
+                    if (itemIdx >= 0 && itemIdx < (int)g_items.size() && !g_servers.empty() && g_selectedServerIdx >= 0 && g_selectedServerIdx < (int)g_servers.size()) {
+                        downloadContainer(g_items[itemIdx], g_servers[g_selectedServerIdx], api, ui);
+                    }
                 } else if (clicked >= 0) {
                     int itemIdx = g_scrollOffset + clicked;
                     if (itemIdx < (int)g_items.size()) {
@@ -1731,6 +1812,18 @@ int main(int argc, char* argv[]) {
                     } else {
                         it.isOffline = false;
                         it.localFilePath = "";
+                    }
+                }
+            }
+            if ((kDown & KEY_Y) && !g_items.empty() && g_selectedItemIdx >= 0 && g_selectedItemIdx < (int)g_items.size() && g_currentNavTitle != "Downloads" && g_currentNavKey != "__offline__") {
+                if (!g_servers.empty() && g_selectedServerIdx >= 0 && g_selectedServerIdx < (int)g_servers.size()) {
+                    auto& it = g_items[g_selectedItemIdx];
+                    if (it.type == MediaType::ALBUM || it.type == MediaType::SEASON) {
+                        downloadContainer(it, g_servers[g_selectedServerIdx], api, ui);
+                    } else if (!g_items.empty() && (g_items[0].type == MediaType::TRACK || g_items[0].type == MediaType::EPISODE)) {
+                        downloadCurrentList(g_servers[g_selectedServerIdx], api, g_currentNavTitle);
+                    } else if (!isMediaContainer(it.type) && it.key != "__LOAD_MORE__") {
+                        downloadSingleItem(it, g_servers[g_selectedServerIdx], api);
                     }
                 }
             }

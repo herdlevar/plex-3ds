@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <atomic>
+#include <mutex>
 
 #ifdef __3DS__
 #include <3ds.h>
@@ -19,6 +20,13 @@ struct DownloadProgress {
     std::string statusText;
     bool completed = false;
     bool failed = false;
+    int queueCount = 0;
+    int queueIndex = 0;
+};
+
+struct QueuedDownload {
+    PlexMediaItem item;
+    std::string url;
 };
 
 class DownloadManager {
@@ -38,6 +46,7 @@ public:
 
     // Actions
     bool startDownload(const PlexMediaItem& item, const std::string& downloadUrl);
+    int queueDownloads(const std::vector<std::pair<PlexMediaItem, std::string>>& items);
     void cancelDownload();
     bool deleteDownload(const std::string& ratingKey);
     bool updatePlaybackOffset(const std::string& ratingKey, int64_t offsetMs);
@@ -45,15 +54,22 @@ public:
     // Status
     bool isDownloading() const { return m_isDownloading.load(); }
     DownloadProgress getProgress();
+    int getQueueSize();
 
 private:
     std::atomic<bool> m_isDownloading{false};
     std::atomic<bool> m_cancelRequested{false};
 
     DownloadProgress m_progress;
+    std::mutex m_progressMutex;
 
     PlexMediaItem m_currentItem;
     std::string m_currentUrl;
+
+    std::vector<QueuedDownload> m_queue;
+    std::mutex m_queueMutex;
+    int m_totalQueueCount = 0;
+    int m_currentQueueIndex = 0;
 
 #ifdef __3DS__
     Thread m_thread = nullptr;

@@ -283,160 +283,261 @@ void DownloadManager::downloadThreadEntry(void* arg) {
 void DownloadManager::downloadLoop() {
     ensureDirectories();
 
-    std::string safeKey = sanitizeKey(m_currentItem.ratingKey);
-    std::string ext = (m_currentItem.type == MediaType::TRACK) ? ".mp3" : ".mkv";
-    std::string folder = (m_currentItem.type == MediaType::TRACK) ? MUSIC_DOWNLOAD_DIR : VIDEO_DOWNLOAD_DIR;
-    std::string finalPath = folder + "/" + safeKey + ext;
-    std::string tempPath = BASE_DOWNLOAD_DIR + "/temp_" + safeKey + ext;
-
-    FILE* outFile = fopen(tempPath.c_str(), "wb");
-    if (!outFile) {
-        m_progress.statusText = "Cannot create file on SD";
-        m_progress.failed = true;
-        m_isDownloading = false;
-        return;
-    }
-
-    CURL* curl = curl_easy_init();
-    if (!curl) {
-        fclose(outFile);
-        remove(tempPath.c_str());
-        m_progress.statusText = "Failed to initialize curl";
-        m_progress.failed = true;
-        m_isDownloading = false;
-        return;
-    }
-
-    struct DownloadContext {
-        DownloadManager* mgr;
-        FILE* fp;
-    } ctx = { this, outFile };
-
-    auto writeCb = [](void* ptr, size_t size, size_t nmemb, void* userdata) -> size_t {
-        DownloadContext* dc = (DownloadContext*)userdata;
-        if (dc->mgr->m_cancelRequested.load() || g_appExiting.load()) return 0;
-        return fwrite(ptr, size, nmemb, dc->fp);
-    };
-
-    auto xferInfoCb = [](void* clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) -> int {
-        (void)ultotal; (void)ulnow;
-        DownloadManager* mgr = (DownloadManager*)clientp;
-        if (mgr->m_cancelRequested.load() || g_appExiting.load()) return 1;
-
-        mgr->m_progress.bytesDownloaded = (int64_t)dlnow;
-        mgr->m_progress.totalBytes = (int64_t)dltotal;
-        if (dltotal > 0) {
-            mgr->m_progress.percent = (int)((dlnow * 100) / dltotal);
-            int mbNow = (int)(dlnow / (1024 * 1024));
-            int mbTot = (int)(dltotal / (1024 * 1024));
-            mgr->m_progress.statusText = std::to_string(mbNow) + " / " + std::to_string(mbTot) + " MB (" + std::to_string(mgr->m_progress.percent) + "%)";
-        } else {
-            int mbNow = (int)(dlnow / (1024 * 1024));
-            mgr->m_progress.statusText = std::to_string(mbNow) + " MB downloaded";
-        }
-        return 0;
-    };
-
-    curl_easy_setopt(curl, CURLOPT_URL, m_currentUrl.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, (curl_write_callback)+writeCb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
-    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, (curl_xferinfo_callback)+xferInfoCb);
-    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, this);
-    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 65536L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
-
-    struct curl_slist* headers = nullptr;
-    headers = curl_slist_append(headers, "User-Agent: Plex3DS/1.0");
-    headers = curl_slist_append(headers, "Accept: */*");
-    headers = curl_slist_append(headers, "X-Plex-Client-Identifier: Plex3DS-Client-001");
-    headers = curl_slist_append(headers, "X-Plex-Client-Profile-Name: Generic");
-    if (m_currentItem.type == MediaType::TRACK) {
-        headers = curl_slist_append(headers, "X-Plex-Client-Profile-Extra: add-transcode-target(type=musicProfile&context=streaming&protocol=http&container=mp3&audioCodec=mp3)");
-    } else {
-        headers = curl_slist_append(headers, "X-Plex-Client-Profile-Extra: add-transcode-target(type=videoProfile&context=streaming&protocol=http&container=mkv&videoCodec=h264&audioCodec=aac)");
-    }
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
-
-    m_progress.statusText = "Downloading...";
-    CURLcode res = curl_easy_perform(curl);
-
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-    fclose(outFile);
-
-    if (res == CURLE_OK && !m_cancelRequested.load()) {
-        remove(finalPath.c_str());
-        rename(tempPath.c_str(), finalPath.c_str());
-
-        int64_t fileSize = 0;
-        struct stat st;
-        if (stat(finalPath.c_str(), &st) == 0) {
-            fileSize = st.st_size;
+    while (!m_cancelRequested.load() && !g_appExiting.load()) {
+        QueuedDownload current;
+        int qIdx = 0;
+        int qTot = 0;
+        {
+            std::lock_guard<std::mutex> lock(m_queueMutex);
+            if (m_queue.empty()) {
+                break;
+            }
+            current = m_queue.front();
+            m_queue.erase(m_queue.begin());
+            m_currentQueueIndex++;
+            qIdx = m_currentQueueIndex;
+            qTot = m_totalQueueCount;
+            m_currentItem = current.item;
+            m_currentUrl = current.url;
         }
 
-        if (fileSize > 4096) {
-            saveMetadata(m_currentItem, finalPath, fileSize);
-            m_progress.statusText = "Download complete!";
-            m_progress.completed = true;
-        } else {
-            remove(finalPath.c_str());
-            m_progress.statusText = "Download failed (empty or corrupt)";
+        {
+            std::lock_guard<std::mutex> lock(m_progressMutex);
+            m_progress.active = true;
+            m_progress.ratingKey = current.item.ratingKey;
+            m_progress.title = current.item.title;
+            m_progress.bytesDownloaded = 0;
+            m_progress.totalBytes = 0;
+            m_progress.percent = 0;
+            m_progress.queueCount = qTot;
+            m_progress.queueIndex = qIdx;
+            m_progress.statusText = "Connecting (" + std::to_string(qIdx) + "/" + std::to_string(qTot) + ")...";
+            m_progress.completed = false;
+            m_progress.failed = false;
+        }
+
+        std::string safeKey = sanitizeKey(current.item.ratingKey);
+        std::string ext = (current.item.type == MediaType::TRACK) ? ".mp3" : ".mkv";
+        std::string folder = (current.item.type == MediaType::TRACK) ? MUSIC_DOWNLOAD_DIR : VIDEO_DOWNLOAD_DIR;
+        std::string finalPath = folder + "/" + safeKey + ext;
+        std::string tempPath = BASE_DOWNLOAD_DIR + "/temp_" + safeKey + ext;
+
+        FILE* outFile = fopen(tempPath.c_str(), "wb");
+        if (!outFile) {
+            std::lock_guard<std::mutex> lock(m_progressMutex);
+            m_progress.statusText = "Cannot create file on SD";
             m_progress.failed = true;
+            continue;
         }
-    } else {
-        remove(tempPath.c_str());
-        if (m_cancelRequested.load()) {
-            m_progress.statusText = "Cancelled";
+
+        CURL* curl = curl_easy_init();
+        if (!curl) {
+            fclose(outFile);
+            remove(tempPath.c_str());
+            std::lock_guard<std::mutex> lock(m_progressMutex);
+            m_progress.statusText = "Failed to initialize curl";
+            m_progress.failed = true;
+            break;
+        }
+
+        struct DownloadContext {
+            DownloadManager* mgr;
+            FILE* fp;
+        } ctx = { this, outFile };
+
+        auto writeCb = [](void* ptr, size_t size, size_t nmemb, void* userdata) -> size_t {
+            DownloadContext* dc = (DownloadContext*)userdata;
+            if (dc->mgr->m_cancelRequested.load() || g_appExiting.load()) return 0;
+            return fwrite(ptr, size, nmemb, dc->fp);
+        };
+
+        auto xferInfoCb = [](void* clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) -> int {
+            (void)ultotal; (void)ulnow;
+            DownloadManager* mgr = (DownloadManager*)clientp;
+            if (mgr->m_cancelRequested.load() || g_appExiting.load()) return 1;
+
+            std::lock_guard<std::mutex> lock(mgr->m_progressMutex);
+            mgr->m_progress.bytesDownloaded = (int64_t)dlnow;
+            mgr->m_progress.totalBytes = (int64_t)dltotal;
+            if (dltotal > 0) {
+                mgr->m_progress.percent = (int)((dlnow * 100) / dltotal);
+                int mbNow = (int)(dlnow / (1024 * 1024));
+                int mbTot = (int)(dltotal / (1024 * 1024));
+                std::string qInfo = "";
+                if (mgr->m_progress.queueCount > 1) {
+                    qInfo = "(" + std::to_string(mgr->m_progress.queueIndex) + "/" + std::to_string(mgr->m_progress.queueCount) + ") ";
+                }
+                mgr->m_progress.statusText = qInfo + std::to_string(mbNow) + " / " + std::to_string(mbTot) + " MB (" + std::to_string(mgr->m_progress.percent) + "%)";
+            } else {
+                int mbNow = (int)(dlnow / (1024 * 1024));
+                mgr->m_progress.statusText = std::to_string(mbNow) + " MB downloaded";
+            }
+            return 0;
+        };
+
+        curl_easy_setopt(curl, CURLOPT_URL, current.url.c_str());
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, (curl_write_callback)+writeCb);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
+        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, (curl_xferinfo_callback)+xferInfoCb);
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, this);
+        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 65536L);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
+
+        struct curl_slist* headers = nullptr;
+        headers = curl_slist_append(headers, "User-Agent: Plex3DS/1.0");
+        headers = curl_slist_append(headers, "Accept: */*");
+        headers = curl_slist_append(headers, "X-Plex-Client-Identifier: Plex3DS-Client-001");
+        headers = curl_slist_append(headers, "X-Plex-Client-Profile-Name: Generic");
+        if (current.item.type == MediaType::TRACK) {
+            headers = curl_slist_append(headers, "X-Plex-Client-Profile-Extra: add-transcode-target(type=musicProfile&context=streaming&protocol=http&container=mp3&audioCodec=mp3)");
         } else {
-            m_progress.statusText = std::string("Failed: ") + curl_easy_strerror(res);
+            headers = curl_slist_append(headers, "X-Plex-Client-Profile-Extra: add-transcode-target(type=videoProfile&context=streaming&protocol=http&container=mkv&videoCodec=h264&audioCodec=aac)");
         }
-        m_progress.failed = true;
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
+
+        {
+            std::lock_guard<std::mutex> lock(m_progressMutex);
+            m_progress.statusText = "Downloading " + current.item.title + "...";
+        }
+
+        CURLcode res = curl_easy_perform(curl);
+
+        curl_slist_free_all(headers);
+        curl_easy_cleanup(curl);
+        fclose(outFile);
+
+        if (res == CURLE_OK && !m_cancelRequested.load()) {
+            remove(finalPath.c_str());
+            rename(tempPath.c_str(), finalPath.c_str());
+
+            int64_t fileSize = 0;
+            struct stat st;
+            if (stat(finalPath.c_str(), &st) == 0) {
+                fileSize = st.st_size;
+            }
+
+            if (fileSize > 4096) {
+                saveMetadata(current.item, finalPath, fileSize);
+                std::lock_guard<std::mutex> lock(m_progressMutex);
+                m_progress.statusText = "Saved: " + current.item.title;
+            } else {
+                remove(finalPath.c_str());
+                std::lock_guard<std::mutex> lock(m_progressMutex);
+                m_progress.statusText = "Download failed (corrupt): " + current.item.title;
+            }
+        } else {
+            remove(tempPath.c_str());
+            if (m_cancelRequested.load()) {
+                std::lock_guard<std::mutex> lock(m_progressMutex);
+                m_progress.statusText = "Cancelled";
+                break;
+            } else {
+                std::lock_guard<std::mutex> lock(m_progressMutex);
+                m_progress.statusText = std::string("Failed: ") + curl_easy_strerror(res);
+                m_progress.failed = true;
+            }
+        }
     }
 
+    {
+        std::lock_guard<std::mutex> lock(m_queueMutex);
+        m_queue.clear();
+        m_totalQueueCount = 0;
+        m_currentQueueIndex = 0;
+    }
     m_isDownloading = false;
+    {
+        std::lock_guard<std::mutex> lock(m_progressMutex);
+        m_progress.active = false;
+        m_progress.completed = !m_cancelRequested.load();
+    }
 }
 #endif
 
 bool DownloadManager::startDownload(const PlexMediaItem& item, const std::string& downloadUrl) {
-    if (m_isDownloading.load()) return false;
+    if (isDownloaded(item.ratingKey)) return false;
+    std::vector<std::pair<PlexMediaItem, std::string>> list;
+    list.push_back({item, downloadUrl});
+    return queueDownloads(list) > 0;
+}
 
-    m_currentItem = item;
-    m_currentUrl = downloadUrl;
-    m_cancelRequested = false;
-    m_isDownloading = true;
+int DownloadManager::queueDownloads(const std::vector<std::pair<PlexMediaItem, std::string>>& items) {
+    std::vector<QueuedDownload> toAdd;
+    for (const auto& pair : items) {
+        if (!pair.first.ratingKey.empty() && !isDownloaded(pair.first.ratingKey)) {
+            bool alreadyIn = false;
+            {
+                std::lock_guard<std::mutex> lock(m_queueMutex);
+                if (m_isDownloading.load() && m_currentItem.ratingKey == pair.first.ratingKey) {
+                    alreadyIn = true;
+                } else {
+                    for (const auto& q : m_queue) {
+                        if (q.item.ratingKey == pair.first.ratingKey) {
+                            alreadyIn = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!alreadyIn) {
+                toAdd.push_back({pair.first, pair.second});
+            }
+        }
+    }
 
-    m_progress.active = true;
-    m_progress.ratingKey = item.ratingKey;
-    m_progress.title = item.title;
-    m_progress.bytesDownloaded = 0;
-    m_progress.totalBytes = 0;
-    m_progress.percent = 0;
-    m_progress.statusText = "Connecting...";
-    m_progress.completed = false;
-    m_progress.failed = false;
+    if (toAdd.empty()) return 0;
+    int added = (int)toAdd.size();
+
+    {
+        std::lock_guard<std::mutex> lock(m_queueMutex);
+        m_queue.insert(m_queue.end(), toAdd.begin(), toAdd.end());
+        m_totalQueueCount += added;
+    }
+
+    if (!m_isDownloading.load()) {
+        m_cancelRequested = false;
+        m_isDownloading = true;
+        {
+            std::lock_guard<std::mutex> lock(m_progressMutex);
+            m_progress.active = true;
+            m_progress.statusText = "Starting queue (" + std::to_string(m_totalQueueCount) + " items)...";
+            m_progress.completed = false;
+            m_progress.failed = false;
+        }
 
 #ifdef __3DS__
-    if (m_thread) {
-        threadJoin(m_thread, U64_MAX);
-        threadFree(m_thread);
-        m_thread = nullptr;
-    }
-    m_thread = threadCreate(downloadThreadEntry, this, 64 * 1024, 0x31, -2, false);
-    if (!m_thread) {
-        m_isDownloading = false;
-        m_progress.active = false;
-        return false;
-    }
+        if (m_thread) {
+            threadJoin(m_thread, U64_MAX);
+            threadFree(m_thread);
+            m_thread = nullptr;
+        }
+        m_thread = threadCreate(downloadThreadEntry, this, 64 * 1024, 0x31, -2, false);
+        if (!m_thread) {
+            m_thread = threadCreate(downloadThreadEntry, this, 64 * 1024, 0x31, -1, false);
+        }
+        if (!m_thread) {
+            m_isDownloading = false;
+            std::lock_guard<std::mutex> lock(m_progressMutex);
+            m_progress.active = false;
+            return 0;
+        }
 #endif
-    return true;
+    }
+    return added;
 }
 
 void DownloadManager::cancelDownload() {
     m_cancelRequested = true;
+    {
+        std::lock_guard<std::mutex> lock(m_queueMutex);
+        m_queue.clear();
+        m_totalQueueCount = 0;
+        m_currentQueueIndex = 0;
+    }
 #ifdef __3DS__
     if (m_thread) {
         threadJoin(m_thread, U64_MAX);
@@ -445,9 +546,18 @@ void DownloadManager::cancelDownload() {
     }
 #endif
     m_isDownloading = false;
-    m_progress.active = false;
+    {
+        std::lock_guard<std::mutex> lock(m_progressMutex);
+        m_progress.active = false;
+    }
 }
 
 DownloadProgress DownloadManager::getProgress() {
+    std::lock_guard<std::mutex> lock(m_progressMutex);
     return m_progress;
+}
+
+int DownloadManager::getQueueSize() {
+    std::lock_guard<std::mutex> lock(m_queueMutex);
+    return (int)m_queue.size() + (m_isDownloading.load() ? 1 : 0);
 }

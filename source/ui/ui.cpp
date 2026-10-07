@@ -85,7 +85,7 @@ void UIRenderer::drawButton(float x, float y, float w, float h, const std::strin
     uint32_t bg = highlighted ? COLOR_PLEX_ORANGE : COLOR_PANEL_BG;
     uint32_t textCol = highlighted ? C2D_Color32(0, 0, 0, 255) : COLOR_WHITE;
     C2D_DrawRectSolid(x, y, 0.5f, w, h, bg);
-    drawText(x + 10, y + (h / 4), 0.5f, textCol, label);
+    drawText(x + (w <= 75.0f ? 6.0f : 10.0f), y + (h / 4), (w <= 75.0f ? 0.42f : 0.5f), textCol, label);
 #endif
 }
 
@@ -556,7 +556,9 @@ void UIRenderer::renderBottomScreen(AppState state,
         if (headerTitle.length() > 22) headerTitle = headerTitle.substr(0, 19) + "...";
         drawHeader(headerTitle, 320);
         if (!dlBadge.empty()) {
-            drawText(230, 4, 0.45f, C2D_Color32(0, 0, 0, 255), dlBadge);
+            drawText(220, 4, 0.45f, C2D_Color32(0, 0, 0, 255), dlBadge);
+        } else if (listTitle != "Downloads" && !items.empty() && (items[0].type == MediaType::TRACK || items[0].type == MediaType::EPISODE)) {
+            drawButton(218, 2, 96, 20, "DL All (Y)", false);
         }
         float y = 32;
         int maxVisible = hasNowPlaying ? 4 : 5;
@@ -582,8 +584,12 @@ void UIRenderer::renderBottomScreen(AppState state,
             } else if (items[itemIdx].type == MediaType::SEASON) {
                 label = "[Season] " + items[itemIdx].title;
             }
+
+            bool isContainer = (items[itemIdx].type == MediaType::ALBUM || items[itemIdx].type == MediaType::SEASON) && (listTitle != "Downloads");
+            int maxLen = isContainer ? 19 : 27;
+
             std::string displayLabel = label;
-            if (displayLabel.length() > 28) {
+            if (displayLabel.length() > (size_t)maxLen) {
                 if (sel) {
                     // Smooth horizontal marquee for the currently focused item
                     static uint64_t s_marqueeStart = 0;
@@ -598,7 +604,6 @@ void UIRenderer::renderBottomScreen(AppState state,
                         s_lastMarqueeIdx = itemIdx;
                         s_marqueeStart = now;
                     }
-                    int maxLen = 27;
                     int overflow = (int)displayLabel.length() - maxLen;
                     int pauseMs = 1200;
                     int speedMs = 180;
@@ -611,17 +616,25 @@ void UIRenderer::renderBottomScreen(AppState state,
                     }
                     displayLabel = displayLabel.substr(offset, maxLen);
                 } else {
-                    displayLabel = displayLabel.substr(0, 26) + "...";
+                    displayLabel = displayLabel.substr(0, maxLen - 2) + "...";
                 }
             }
-            drawButton(10, y, 300, 34, displayLabel, sel);
+
+            if (isContainer) {
+                drawButton(10, y, 226, 34, displayLabel, sel);
+                drawButton(240, y, 70, 34, "DL (Y)", false);
+            } else {
+                drawButton(10, y, 300, 34, displayLabel, sel);
+            }
+
             bool hasResume = (items[itemIdx].type != MediaType::TRACK) &&
                              (items[itemIdx].viewOffsetMs > 10000) &&
                              (items[itemIdx].durationMs <= 0 || items[itemIdx].viewOffsetMs < items[itemIdx].durationMs - 15000);
             if (hasResume && items[itemIdx].durationMs > 0) {
                 float pct = (float)items[itemIdx].viewOffsetMs / (float)items[itemIdx].durationMs;
                 if (pct > 1.0f) pct = 1.0f;
-                C2D_DrawRectSolid(12, y + 31, 0.5f, 296.0f * pct, 2, COLOR_PLEX_ORANGE);
+                float barW = isContainer ? 222.0f : 296.0f;
+                C2D_DrawRectSolid(12, y + 31, 0.5f, barW * pct, 2, COLOR_PLEX_ORANGE);
             }
             y += 38;
         }
@@ -758,7 +771,7 @@ void UIRenderer::renderBlankBottomScreen() {
 #endif
 }
 
-int UIRenderer::handleTouch(AppState state, int touchX, int touchY, int itemCount, bool hasNowPlaying, bool isLoggedIn, bool hasServers) {
+int UIRenderer::handleTouch(AppState state, int touchX, int touchY, int itemCount, bool hasNowPlaying, bool isLoggedIn, bool hasServers, const std::vector<PlexMediaItem>* items, int scrollOffset, const std::string& listTitle) {
     if (state == AppState::SERVER_SELECT) {
         int maxVis = hasNowPlaying ? 2 : 3;
         float y = 28.0f;
@@ -822,11 +835,34 @@ int UIRenderer::handleTouch(AppState state, int touchX, int touchY, int itemCoun
             }
             return TOUCH_NONE;
         }
+
+        // Header button: [DL All (Y)] (x: 215..318, y: 0..26)
+        if (touchX >= 215 && touchX <= 318 && touchY >= 0 && touchY <= 26) {
+            if (listTitle != "Downloads" && items && !items->empty() && ((*items)[0].type == MediaType::TRACK || (*items)[0].type == MediaType::EPISODE)) {
+                return TOUCH_ITEM_DOWNLOAD_ALL;
+            }
+        }
+
         int maxVis = hasNowPlaying ? 4 : 5;
         float y = 32;
         for (int i = 0; i < std::min(itemCount, maxVis); i++) {
-            if (touchX >= 10 && touchX <= 310 && touchY >= y && touchY <= (y + 34)) {
-                return i;
+            int itemIdx = scrollOffset + i;
+            bool isContainer = false;
+            if (items && itemIdx < (int)items->size() && listTitle != "Downloads") {
+                isContainer = ((*items)[itemIdx].type == MediaType::ALBUM || (*items)[itemIdx].type == MediaType::SEASON);
+            }
+
+            if (isContainer) {
+                if (touchX >= 10 && touchX <= 236 && touchY >= y && touchY <= (y + 34)) {
+                    return i;
+                }
+                if (touchX >= 238 && touchX <= 315 && touchY >= y && touchY <= (y + 34)) {
+                    return TOUCH_ITEM_CONTAINER_DL_BASE + i;
+                }
+            } else {
+                if (touchX >= 10 && touchX <= 310 && touchY >= y && touchY <= (y + 34)) {
+                    return i;
+                }
             }
             y += 38;
         }

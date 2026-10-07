@@ -138,5 +138,42 @@ class TestPlex3DSResumeState(unittest.TestCase):
         self.assertEqual(len(filtered), 2)
 
 
+class TestPlex3DSDownloadQueue(unittest.TestCase):
+    def test_queue_filtering_and_duplicates(self):
+        # Simulates DownloadManager::queueDownloads logic
+        already_downloaded = {"track1", "track3"}
+        active_download = "track2"
+        existing_queue = ["track4"]
+
+        incoming_batch = [
+            ("track1", "http://server/t1"),  # Already on disk -> skip
+            ("track2", "http://server/t2"),  # Currently downloading -> skip duplicate
+            ("track4", "http://server/t4"),  # Already in queue -> skip duplicate
+            ("track5", "http://server/t5"),  # New -> enqueue
+            ("track6", "http://server/t6"),  # New -> enqueue
+        ]
+
+        to_add = []
+        for rkey, url in incoming_batch:
+            if rkey in already_downloaded:
+                continue
+            if rkey == active_download or rkey in existing_queue:
+                continue
+            to_add.append((rkey, url))
+
+        self.assertEqual(len(to_add), 2)
+        self.assertEqual([x[0] for x in to_add], ["track5", "track6"])
+
+    def test_download_badge_formatting(self):
+        # Queue count > 1 shows (queueIndex/queueCount)
+        def format_badge(queue_index, queue_count, percent):
+            if queue_count > 1:
+                return f"DL ({queue_index}/{queue_count}): {percent}%"
+            return f"DL: {percent}%"
+
+        self.assertEqual(format_badge(1, 1, 45), "DL: 45%")
+        self.assertEqual(format_badge(3, 12, 78), "DL (3/12): 78%")
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
