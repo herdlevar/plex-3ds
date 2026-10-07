@@ -127,10 +127,19 @@ std::vector<PlexMediaItem> DownloadManager::getDownloadedItems() {
                 cJSON* index = cJSON_GetObjectItem(root, "index");
 
                 std::string lp = (localPath && localPath->valuestring) ? localPath->valuestring : "";
-                // Verify local media file exists
+                // Verify local media file exists and has valid content (> 4KB)
                 FILE* mediaFile = fopen(lp.c_str(), "rb");
                 if (mediaFile) {
+                    fseek(mediaFile, 0, SEEK_END);
+                    long actualSz = ftell(mediaFile);
                     fclose(mediaFile);
+                    if (actualSz < 4096) {
+                        // Purge corrupt / 0-byte download file and metadata
+                        remove(lp.c_str());
+                        remove(metaPath.c_str());
+                        cJSON_Delete(root);
+                        continue;
+                    }
 
                     PlexMediaItem it;
                     if (rk && rk->valuestring) it.ratingKey = rk->valuestring;
@@ -344,8 +353,13 @@ void DownloadManager::downloadLoop() {
     headers = curl_slist_append(headers, "Accept: */*");
     headers = curl_slist_append(headers, "X-Plex-Client-Identifier: Plex3DS-Client-001");
     headers = curl_slist_append(headers, "X-Plex-Client-Profile-Name: Generic");
-    headers = curl_slist_append(headers, "X-Plex-Client-Profile-Extra: add-transcode-target(type=videoProfile&context=streaming&protocol=http&container=mkv&videoCodec=h264&audioCodec=aac)");
+    if (m_currentItem.type == MediaType::TRACK) {
+        headers = curl_slist_append(headers, "X-Plex-Client-Profile-Extra: add-transcode-target(type=musicProfile&context=streaming&protocol=http&container=mp3&audioCodec=mp3)");
+    } else {
+        headers = curl_slist_append(headers, "X-Plex-Client-Profile-Extra: add-transcode-target(type=videoProfile&context=streaming&protocol=http&container=mkv&videoCodec=h264&audioCodec=aac)");
+    }
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
 
     m_progress.statusText = "Downloading...";
     CURLcode res = curl_easy_perform(curl);
@@ -364,9 +378,15 @@ void DownloadManager::downloadLoop() {
             fileSize = st.st_size;
         }
 
-        saveMetadata(m_currentItem, finalPath, fileSize);
-        m_progress.statusText = "Download complete!";
-        m_progress.completed = true;
+        if (fileSize > 4096) {
+            saveMetadata(m_currentItem, finalPath, fileSize);
+            m_progress.statusText = "Download complete!";
+            m_progress.completed = true;
+        } else {
+            remove(finalPath.c_str());
+            m_progress.statusText = "Download failed (empty or corrupt)";
+            m_progress.failed = true;
+        }
     } else {
         remove(tempPath.c_str());
         if (m_cancelRequested.load()) {

@@ -209,6 +209,30 @@ static void saveResume() {
     cJSON_Delete(root);
 }
 
+static AppState s_downloadsReturnState = AppState::SERVER_SELECT;
+
+static void openDownloadsView(UIRenderer& ui) {
+    (void)ui;
+    if (g_state != AppState::ITEM_LIST) {
+        s_downloadsReturnState = g_state;
+    }
+    g_items = g_downloadManager.getDownloadedItems();
+    for (auto& item : g_items) {
+        if (g_resumeMap.count(item.ratingKey)) {
+            item.viewOffsetMs = std::max(item.viewOffsetMs, g_resumeMap[item.ratingKey]);
+        }
+    }
+    g_navStack.clear();
+    g_currentNavTitle = "Downloads";
+    g_currentNavKey = "__offline__";
+    g_state = AppState::ITEM_LIST;
+    g_selectedItemIdx = 0;
+    g_scrollOffset = 0;
+    int64_t freeBytes = g_downloadManager.getSDFreeSpaceBytes();
+    int freeGB = (int)(freeBytes / (1024 * 1024 * 1024));
+    g_statusMsg = "Downloads (" + std::to_string(g_items.size()) + " items, " + std::to_string(freeGB) + " GB free)";
+}
+
 static void playMediaItem(const PlexMediaItem& item, AudioPlayer& audioPlayer, VideoPlayer& videoPlayer, const PlexAPI& api, int64_t startOffsetMs = 0) {
     g_nowPlayingItem = item;
     g_nowPlayingItem.viewOffsetMs = startOffsetMs;
@@ -1136,10 +1160,20 @@ int main(int argc, char* argv[]) {
                     } else {
                         g_statusMsg = "Failed to connect to " + g_servers[g_selectedServerIdx].name;
                         g_state = AppState::SERVER_SELECT;
+                        auto dlItems = g_downloadManager.getDownloadedItems();
+                        if (!dlItems.empty()) {
+                            openDownloadsView(ui);
+                            g_statusMsg = "Offline: opened Downloads (" + std::to_string(dlItems.size()) + " items)";
+                        }
                     }
                     ensureOfflineLibrary();
                 } else {
                     g_state = AppState::SERVER_SELECT;
+                    auto dlItems = g_downloadManager.getDownloadedItems();
+                    if (!dlItems.empty()) {
+                        openDownloadsView(ui);
+                        g_statusMsg = "Offline: opened Downloads (" + std::to_string(dlItems.size()) + " items)";
+                    }
                 }
             }
             continue;
@@ -1354,7 +1388,13 @@ int main(int argc, char* argv[]) {
                     api.requestPin(g_pinId, g_pinCode);
                     g_lastPollTime = osGetTime();
                     g_statusMsg = "Generated new PIN.";
+                } else if (action == TOUCH_AUTH_DOWNLOADS) {
+                    openDownloadsView(ui);
                 }
+            }
+
+            if (kDown & KEY_L) {
+                openDownloadsView(ui);
             }
 
             if (kDown & KEY_B) {
@@ -1412,6 +1452,8 @@ int main(int argc, char* argv[]) {
                     actionSyncServers(api, ui);
                 } else if (action == TOUCH_SERVER_REMOVE) {
                     kDown |= KEY_X;
+                } else if (action == TOUCH_SERVER_DOWNLOADS) {
+                    openDownloadsView(ui);
                 } else if (action == TOUCH_SERVER_ACCOUNT) {
                     g_state = AppState::PIN_AUTH;
                     if (g_config.authToken.empty() && (g_pinId.empty() || g_pinCode.empty())) {
@@ -1419,6 +1461,9 @@ int main(int argc, char* argv[]) {
                         g_lastPollTime = osGetTime();
                     }
                 }
+            }
+            if (kDown & KEY_L) {
+                openDownloadsView(ui);
             }
             if (kDown & KEY_SELECT) {
                 g_state = AppState::PIN_AUTH;
@@ -1462,7 +1507,7 @@ int main(int argc, char* argv[]) {
                     g_scrollOffset = 0;
                     g_statusMsg = "Connected to " + srv.name;
                 } else {
-                    g_statusMsg = "Failed to connect to " + srv.name;
+                    g_statusMsg = "Failed to connect to " + srv.name + " (Press L for Downloads)";
                 }
             }
         } else if (g_state == AppState::LIBRARY_LIST) {
@@ -1508,20 +1553,7 @@ int main(int argc, char* argv[]) {
                 s_upHoldFrames = 0;
                 s_downHoldFrames = 0;
                 if (g_libraries[g_selectedLibraryIdx].key == "__offline__") {
-                    g_items = g_downloadManager.getDownloadedItems();
-                    for (auto& item : g_items) {
-                        if (g_resumeMap.count(item.ratingKey)) {
-                            item.viewOffsetMs = std::max(item.viewOffsetMs, g_resumeMap[item.ratingKey]);
-                        }
-                    }
-                    g_navStack.clear();
-                    g_currentNavTitle = "Downloads";
-                    g_state = AppState::ITEM_LIST;
-                    g_selectedItemIdx = 0;
-                    g_scrollOffset = 0;
-                    int64_t freeBytes = g_downloadManager.getSDFreeSpaceBytes();
-                    int freeGB = (int)(freeBytes / (1024 * 1024 * 1024));
-                    g_statusMsg = "Downloads (" + std::to_string(g_items.size()) + " items, " + std::to_string(freeGB) + " GB free)";
+                    openDownloadsView(ui);
                 } else {
                     g_statusMsg = "Loading " + g_libraries[g_selectedLibraryIdx].title + "...";
                     g_items.clear();
@@ -1555,6 +1587,9 @@ int main(int argc, char* argv[]) {
                         g_statusMsg = "Failed to load " + g_libraries[g_selectedLibraryIdx].title;
                     }
                 }
+            }
+            if (kDown & KEY_L) {
+                openDownloadsView(ui);
             }
             if (kDown & KEY_B) {
                 s_upHoldFrames = 0;
@@ -1593,7 +1628,9 @@ int main(int argc, char* argv[]) {
             }
             if (kDown & KEY_TOUCH) {
                 int clicked = ui.handleTouch(g_state, touch.px, touch.py, (int)g_items.size(), g_hasNowPlaying);
-                if (clicked >= 0) {
+                if (clicked == TOUCH_ITEM_BACK) {
+                    kDown |= KEY_B;
+                } else if (clicked >= 0) {
                     int itemIdx = g_scrollOffset + clicked;
                     if (itemIdx < (int)g_items.size()) {
                         g_selectedItemIdx = itemIdx;
@@ -1683,7 +1720,7 @@ int main(int argc, char* argv[]) {
                 if (it.isOffline || g_downloadManager.isDownloaded(it.ratingKey)) {
                     g_downloadManager.deleteDownload(it.ratingKey);
                     g_statusMsg = "Deleted " + it.title;
-                    if (!g_libraries.empty() && g_selectedLibraryIdx >= 0 && g_selectedLibraryIdx < (int)g_libraries.size() && g_libraries[g_selectedLibraryIdx].key == "__offline__") {
+                    if ((!g_libraries.empty() && g_selectedLibraryIdx >= 0 && g_selectedLibraryIdx < (int)g_libraries.size() && g_libraries[g_selectedLibraryIdx].key == "__offline__") || g_currentNavTitle == "Downloads" || g_currentNavKey == "__offline__") {
                         g_items = g_downloadManager.getDownloadedItems();
                         if (g_selectedItemIdx >= (int)g_items.size()) {
                             g_selectedItemIdx = std::max(0, (int)g_items.size() - 1);
@@ -1710,7 +1747,11 @@ int main(int argc, char* argv[]) {
                     g_scrollOffset = prev.scrollOffset;
                     g_statusMsg = "Back to " + g_currentNavTitle;
                 } else {
-                    g_state = AppState::LIBRARY_LIST;
+                    if (g_currentNavTitle == "Downloads" || g_currentNavKey == "__offline__") {
+                        g_state = s_downloadsReturnState;
+                    } else {
+                        g_state = AppState::LIBRARY_LIST;
+                    }
                     g_scrollOffset = 0;
                 }
             }
@@ -1847,7 +1888,7 @@ int main(int argc, char* argv[]) {
                 if (isItemDownloaded) {
                     g_downloadManager.deleteDownload(curItem.ratingKey);
                     g_statusMsg = "Deleted " + curItem.title;
-                    if (!g_libraries.empty() && g_selectedLibraryIdx >= 0 && g_selectedLibraryIdx < (int)g_libraries.size() && g_libraries[g_selectedLibraryIdx].key == "__offline__") {
+                    if ((!g_libraries.empty() && g_selectedLibraryIdx >= 0 && g_selectedLibraryIdx < (int)g_libraries.size() && g_libraries[g_selectedLibraryIdx].key == "__offline__") || g_currentNavTitle == "Downloads" || g_currentNavKey == "__offline__") {
                         g_items = g_downloadManager.getDownloadedItems();
                         if (g_selectedItemIdx >= (int)g_items.size()) {
                             g_selectedItemIdx = std::max(0, (int)g_items.size() - 1);

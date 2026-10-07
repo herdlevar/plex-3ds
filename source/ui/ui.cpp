@@ -466,16 +466,18 @@ void UIRenderer::renderBottomScreen(AppState state,
             // Row 2: [+ Add Server by Local IP] (x: 15..305, y: 90..124)
             drawButton(15, 90, 290, 34, "+ Add Server by Local IP", false);
 
-            // Row 3: [Refresh PIN Link Code] (x: 15..305, y: 130..164)
-            drawButton(15, 130, 290, 34, "Refresh Link Code", false);
+            // Row 3: [Refresh Link] (x: 15..150, y: 130..164) and [Downloads (L)] (x: 155..305, y: 130..164)
+            drawButton(15, 130, 135, 34, "Refresh Link", false);
+            drawButton(155, 130, 150, 34, "Downloads (L)", false);
 
             // Row 4: If servers already exist, show [Back to Servers] (x: 15..305, y: 170..204)
             if (!servers.empty()) {
                 drawButton(15, 170, 290, 34, "< Back to Servers", false);
-                drawText(15, 214, 0.38f, COLOR_GRAY, "Press (B) or tap above to return to servers");
+                drawText(15, 214, 0.38f, COLOR_GRAY, "(L) Offline Downloads  (B) Back to Servers");
             } else {
                 drawText(15, 178, 0.42f, COLOR_GRAY, "Enter link code on your phone or PC browser,");
                 drawText(15, 198, 0.42f, COLOR_GRAY, "or tap 'Sign In Email' to use the 3DS keyboard.");
+                drawText(15, 214, 0.38f, COLOR_GRAY, "Press (L) anytime to open Offline Downloads.");
             }
         }
         return;
@@ -513,21 +515,23 @@ void UIRenderer::renderBottomScreen(AppState state,
         drawButton(114, btnY1, 92, btnH, "Sync (Y)");
         drawButton(213, btnY1, 92, btnH, "Remove (X)");
 
-        // Row 2 Action button: Account Management
+        // Row 2 Action buttons: [Downloads (L)] and [Account: ...]
         float btnY2 = hasNowPlaying ? 128.0f : 168.0f;
+        drawButton(15, btnY2, 135, btnH, "Downloads (L)", false);
+
         std::string acctLabel;
         if (isLoggedIn && !username.empty()) {
-            acctLabel = "Account: " + username + " (Manage)";
+            acctLabel = username;
         } else if (isLoggedIn) {
-            acctLabel = "Account: Signed In (Manage)";
+            acctLabel = "Signed In";
         } else {
-            acctLabel = "Account: Not Signed In (Link/Login)";
+            acctLabel = "Link/Login";
         }
-        if (acctLabel.length() > 32) acctLabel = acctLabel.substr(0, 30) + "..";
-        drawButton(15, btnY2, 290, btnH, acctLabel, false);
+        if (acctLabel.length() > 16) acctLabel = acctLabel.substr(0, 14) + "..";
+        drawButton(155, btnY2, 150, btnH, "Account: " + acctLabel, false);
 
         if (!hasNowPlaying) {
-            drawText(15, 214, 0.38f, COLOR_GRAY, "(A) Connect  (X) Remove  (Y) Sync  (Sel) Account");
+            drawText(15, 214, 0.38f, COLOR_GRAY, "(A) Connect  (L) Downloads  (X) Del  (Y) Sync  (Sel) Acct");
         }
     } else if (state == AppState::LIBRARY_LIST) {
         drawHeader("SECTIONS", 320);
@@ -622,7 +626,14 @@ void UIRenderer::renderBottomScreen(AppState state,
             y += 38;
         }
         if (items.empty()) {
-            drawText(20, 80, 0.5f, COLOR_GRAY, "No items found.");
+            if (listTitle == "Downloads") {
+                drawText(20, 75, 0.5f, COLOR_WHITE, "No offline downloads found.");
+                drawText(20, 100, 0.42f, COLOR_GRAY, "Download media from your server");
+                drawText(20, 120, 0.42f, COLOR_GRAY, "to enjoy pocket listening & offline playback.");
+                drawButton(15, 160, 290, 36, "< Back (B)", false);
+            } else {
+                drawText(20, 80, 0.5f, COLOR_GRAY, "No items found.");
+            }
         }
     } else if (state == AppState::DETAIL_VIEW) {
         drawHeader(isItemDownloaded ? "DETAILS (DOWNLOADED)" : "DETAILS", 320);
@@ -768,10 +779,11 @@ int UIRenderer::handleTouch(AppState state, int touchX, int touchY, int itemCoun
             if (touchX >= 213 && touchX <= 305) return TOUCH_SERVER_REMOVE;
         }
 
-        // Row 2 Action button: Account Management
+        // Row 2 Action buttons: [Downloads (L)] and [Account Management]
         float btnY2 = hasNowPlaying ? 128.0f : 168.0f;
-        if (touchX >= 15 && touchX <= 305 && touchY >= btnY2 && touchY <= btnY2 + btnH) {
-            return TOUCH_SERVER_ACCOUNT;
+        if (touchY >= btnY2 && touchY <= btnY2 + btnH) {
+            if (touchX >= 15 && touchX <= 150) return TOUCH_SERVER_DOWNLOADS;
+            if (touchX >= 155 && touchX <= 305) return TOUCH_SERVER_ACCOUNT;
         }
         return TOUCH_NONE;
     } else if (state == AppState::PIN_AUTH) {
@@ -785,8 +797,11 @@ int UIRenderer::handleTouch(AppState state, int touchX, int touchY, int itemCoun
             if (touchX >= 158 && touchX <= 305 && touchY >= 30 && touchY <= 82) return TOUCH_AUTH_SIGN_IN_EMAIL;
             // Row 2: [+ Add Server by Local IP] (x: 15..305, y: 90..124)
             if (touchX >= 15 && touchX <= 305 && touchY >= 90 && touchY <= 124) return TOUCH_AUTH_ADD_LOCAL_IP;
-            // Row 3: [Refresh PIN Link Code] (x: 15..305, y: 130..164)
-            if (touchX >= 15 && touchX <= 305 && touchY >= 130 && touchY <= 164) return TOUCH_AUTH_REFRESH_PIN;
+            // Row 3: [Refresh Link] (x: 15..150) and [Downloads (L)] (x: 155..305)
+            if (touchY >= 130 && touchY <= 164) {
+                if (touchX >= 15 && touchX <= 150) return TOUCH_AUTH_REFRESH_PIN;
+                if (touchX >= 155 && touchX <= 305) return TOUCH_AUTH_DOWNLOADS;
+            }
             // Row 4: If servers already exist, show [Back to Servers] (x: 15..305, y: 170..204)
             if (hasServers && touchX >= 15 && touchX <= 305 && touchY >= 170 && touchY <= 204) return TOUCH_AUTH_BACK;
         }
@@ -801,6 +816,12 @@ int UIRenderer::handleTouch(AppState state, int touchX, int touchY, int itemCoun
             y += 38;
         }
     } else if (state == AppState::ITEM_LIST) {
+        if (itemCount == 0) {
+            if (touchX >= 15 && touchX <= 305 && touchY >= 155 && touchY <= 200) {
+                return TOUCH_ITEM_BACK;
+            }
+            return TOUCH_NONE;
+        }
         int maxVis = hasNowPlaying ? 4 : 5;
         float y = 32;
         for (int i = 0; i < std::min(itemCount, maxVis); i++) {

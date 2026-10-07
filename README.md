@@ -27,18 +27,20 @@ Plex3DS offloads heavy media transcoding to your Plex Media Server, delivering l
   * Subtitle stream selection and automatic server-side burn-in.
   * **Smart Resume / Restart:** Asks to resume from your last position or restart from the beginning, automatically persisting progress in `resume.json`.
 
-* **🎵 Clamshell Music Playback:**
+* **🎵 Clamshell Music Playback & Pocket Mode:**
   * Listen to albums and audio tracks with the 3DS clamshell closed like a dedicated portable MP3 player.
-  * Bypasses standard console sleep mode (`aptSetSleepAllowed(false)`) to maintain audio streaming threads while powering off display backlights to maximize battery life.
+  * Bypasses standard console sleep mode (`aptSetSleepAllowed(false)`) to maintain audio decoding threads while powering off display backlights to maximize battery life.
+  * **Pocket Controls:** Use the physical `(L)` and `(R)` shoulder buttons to skip tracks, and press `(START)` or `(L + R)` to toggle play/pause directly through your pocket without opening the console.
 
 * **💡 Intelligent Screen Dimming & Touch Protection:**
   * Bottom screen backlight automatically turns off during video (10s) and music (15s) playback to conserve battery and eliminate glare.
   * **Accidental Touch Prevention:** The first touch on a dimmed screen simply restores brightness without triggering any UI buttons.
 
-* **💾 Offline Media Downloads & Local Cache:**
+* **💾 Offline Media Downloads (Zero-Wi-Fi Playback):**
   * Download TV episodes, movies, and music tracks directly to your SD card (`sdmc:/3ds/plex-3ds/downloads/`).
-  * Full path traversal protection and background download progress tracking.
-  * Browse and play downloaded media on planes, trains, or anywhere without Wi-Fi.
+  * **100% Offline Access:** Press `(L)` or tap `[Downloads (L)]` on the server selection or sign-in screens to access your downloaded library at any time—even with 0% Wi-Fi or no internet connection.
+  * If launched offline with downloaded media on SD, Plex3DS automatically opens your offline library.
+  * Full path traversal protection, background download progress tracking, and automatic cleanup of partial files.
 
 * **🌐 Multi-Server & Paginated Libraries:**
   * Discover and switch between multiple local and remote Plex servers seamlessly.
@@ -50,17 +52,50 @@ Plex3DS offloads heavy media transcoding to your Plex Media Server, delivering l
 
 ---
 
-## 🎮 Controls
+## 🎧 Clamshell Pocket Listening & Offline Media
 
-### Library Navigation
+### Why Offline Downloads for Clamshell Playback?
+The Nintendo 3DS OS firmware automatically powers down the wireless radio at the hardware level whenever the clamshell lid is shut. As a result, active TCP connections drop and the 3DS cannot fetch new media streams over Wi-Fi while closed.
+
+Plex3DS solves this with two complementary systems:
+1. **Full-Track RAM Buffering (Streaming):** When streaming audio online, Plex3DS downloads the entire track into memory within 2–3 seconds at maximum Wi-Fi throughput. The current song continues playing smoothly through your headphones even after you close the lid.
+2. **Offline Downloads (Recommended for Walkman Mode):** By downloading albums, playlists, or videos to your SD card, playback has **zero network dependencies**. When playing downloaded tracks with the lid closed, Plex3DS seamlessly auto-advances through your entire playlist track by track.
+
+### Pocket Controls (Lid Closed)
 | Input | Action |
 | :--- | :--- |
-| **D-Pad Up / Down** or **Circle Pad** | Scroll through libraries and items |
-| **A** or **Touch Item** | Select / Enter section / Play item |
-| **B** | Go back to previous screen |
-| **Y** | Download highlighted item to SD card for offline playback |
-| **X** | Cycle active Plex servers |
+| **L Shoulder** | Previous track |
+| **R Shoulder** | Next track |
+| **START** or **L + R** | Toggle play / pause |
+
+---
+
+## 🎮 Controls
+
+### Global & Offline Shortcuts
+| Input | Action |
+| :--- | :--- |
+| **L Shoulder** | Open **Offline Downloads** (from Server Select, Sign-In, or Library screen) |
 | **START** | Gracefully exit application |
+
+### Library & Server Navigation
+| Input | Action |
+| :--- | :--- |
+| **D-Pad Up / Down** or **Circle Pad** | Scroll through servers, libraries, and media items |
+| **A** or **Touch Item** | Select / Open item details / Connect to server |
+| **B** | Return to previous screen / Return from Downloads |
+| **X** | Remove selected server (on Server Select) or delete downloaded item (in Downloads) |
+| **Y** | Sync servers from Plex account |
+| **SELECT** | Switch to Plex Account / Sign-In screen |
+
+### Media Detail View
+| Input | Action |
+| :--- | :--- |
+| **A** or **Touch Play / Resume** | Start playback (or resume from saved timestamp) |
+| **Y** or **Touch Restart** | Restart playback from beginning (0:00) |
+| **X** or **Touch Download / Delete** | Download item to SD card, or delete existing download |
+| **SELECT** or **Touch CC** | Cycle subtitle tracks and closed captions (Video) |
+| **B** or **Touch Back** | Return to item list |
 
 ### Media Playback
 | Input | Action |
@@ -69,17 +104,27 @@ Plex3DS offloads heavy media transcoding to your Plex Media Server, delivering l
 | **D-Pad Left / Right** | Seek backward / forward 15 seconds |
 | **Touch Progress Bar** | Jump / scrub directly to timestamp |
 | **L / R Shoulders** | Previous / Next audio track (Music player) |
-| **B** | Stop playback and return to browser |
+| **B** or **Touch Stop** | Stop playback and return to browser |
 | **Touch Screen (When Dimmed)** | Wake display (suppresses accidental button click) |
 
 ---
 
 ## 📦 Installation
 
-### Option 1: Manual SD Card Install (Recommended)
+### Option 1: Direct HOME Menu Icon via FBI (Recommended)
+Tired of opening Rosalina Menu (`L + Down + Select`) and taking over a title every time you use homebrew? Install the Homebrew Launcher as a standalone title on your 3DS HOME Menu:
+
+1. Download [`Homebrew_Launcher.cia`](https://github.com/PabloMK7/homebrew_launcher/releases) (or grab the bundled copy from this repository).
+2. Copy `Homebrew_Launcher.cia` to your 3DS SD card.
+3. Open **FBI** on your 3DS, navigate to `SD` -> locate `Homebrew_Launcher.cia`, and select **Install and delete CIA**.
+4. Press `HOME` to unwrap the **Homebrew Launcher** gift box on your HOME Menu.
+5. Place `Plex3DS.3dsx` and `Plex3DS.smdh` in `sdmc:/3ds/Plex3DS/`.
+6. Launch **Homebrew Launcher** directly from your HOME Menu anytime and select **Plex3DS**!
+
+### Option 2: Manual SD Card Install
 1. Download the latest `Plex3DS.3dsx` and `Plex3DS.smdh` from the [Releases](https://github.com/Jared/plex-3ds/releases) page.
 2. Insert your 3DS SD card into your computer.
-3. Place `Plex3DS.3dsx` and `Plex3DS.smdh` into the `/3ds/Plex3DS/` folder on your SD card:
+3. Place `Plex3DS.3dsx` and `Plex3DS.smdh` into `/3ds/Plex3DS/` on your SD card:
    ```text
    sdmc:/
    └── 3ds/
@@ -87,15 +132,18 @@ Plex3DS offloads heavy media transcoding to your Plex Media Server, delivering l
            ├── Plex3DS.3dsx
            └── Plex3DS.smdh
    ```
-4. Insert the SD card back into your 3DS, open **Homebrew Launcher**, and launch **Plex3DS**.
+4. Launch via **Homebrew Launcher**.
 
-### Option 2: Wireless Auto-Deployment
-If your 3DS is connected to the same Wi-Fi network:
-* **Via NetLoader:** In Homebrew Launcher, press `Y` to activate NetLoader, then run:
+### Option 3: Wireless Auto-Deployment (NetLoader)
+If your 3DS is connected to Wi-Fi:
+* In Homebrew Launcher, press `Y` to activate NetLoader, then send the binary directly:
+  ```bash
+  3dslink -a <3DS_IP> Plex3DS.3dsx
+  ```
+  or run:
   ```bash
   python tools/auto_deploy.py <3DS_IP>
   ```
-* **Via FTPD:** Open the FTPD homebrew app on your 3DS, then run the same command to upload binaries and assets automatically.
 
 ---
 
