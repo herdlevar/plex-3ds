@@ -615,7 +615,7 @@ std::string PlexAPI::buildTranscodeUrl(const PlexServer& server, const PlexMedia
         + "&videoCodec=h264&audioCodec=aac"
         + "&location=lan"
         + "&session=" + sessionId
-        + "&" + subParam
+        + (!subParam.empty() ? ("&" + subParam) : "")
         + "&X-Plex-Token=" + server.accessToken
         + "&X-Plex-Client-Identifier=Plex3DS-Client-001"
         + "&X-Plex-Client-Profile-Name=Generic"
@@ -636,7 +636,7 @@ std::string PlexAPI::buildTranscodeUrl(const PlexServer& server, const PlexMedia
         + "&videoCodec=h264&audioCodec=aac"
         + "&location=lan"
         + "&session=" + sessionId
-        + "&" + subParam
+        + (!subParam.empty() ? ("&" + subParam) : "")
         + "&X-Plex-Token=" + server.accessToken
         + "&X-Plex-Client-Identifier=Plex3DS-Client-001"
         + "&X-Plex-Client-Profile-Name=Generic"

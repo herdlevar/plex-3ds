@@ -943,30 +943,62 @@ int main(int argc, char* argv[]) {
         bool isMediaPlaying = (videoPlayer.isPlaying() || videoPlayer.hasFrame() || audioPlayer.isPlaying());
         if (g_hasNowPlaying && !isMediaPlaying) {
             if (g_nowPlayingItem.type != MediaType::TRACK) {
-                g_nowPlayingItem.viewOffsetMs = 0;
-                g_resumeMap.erase(g_nowPlayingItem.ratingKey);
-                saveResume();
-                if (g_nowPlayingItem.isOffline || g_downloadManager.isDownloaded(g_nowPlayingItem.ratingKey)) {
-                    g_downloadManager.updatePlaybackOffset(g_nowPlayingItem.ratingKey, 0);
-                }
-                for (auto& it : g_items) {
-                    if (it.ratingKey == g_nowPlayingItem.ratingKey) {
-                        it.viewOffsetMs = 0;
-                        break;
+                bool hadPlayed = (videoPlayer.getCurrentTimeMs() > 3000 || videoPlayer.hasFrame());
+                if (!hadPlayed) {
+                    std::string err = videoPlayer.getStatusMessage();
+                    if (err.empty() || err == "Stopped" || err == "Idle") {
+                        err = "Video playback failed";
+                    }
+                    g_statusMsg = err;
+                    g_hasNowPlaying = false;
+                    g_controlsExpanded = false;
+#ifdef __3DS__
+                    osSetSpeedupEnable(false);
+#endif
+                } else {
+                    g_nowPlayingItem.viewOffsetMs = 0;
+                    g_resumeMap.erase(g_nowPlayingItem.ratingKey);
+                    saveResume();
+                    if (g_nowPlayingItem.isOffline || g_downloadManager.isDownloaded(g_nowPlayingItem.ratingKey)) {
+                        g_downloadManager.updatePlaybackOffset(g_nowPlayingItem.ratingKey, 0);
+                    }
+                    for (auto& it : g_items) {
+                        if (it.ratingKey == g_nowPlayingItem.ratingKey) {
+                            it.viewOffsetMs = 0;
+                            break;
+                        }
+                    }
+                    if (!g_nowPlayingItem.isOffline && !g_servers.empty() && g_selectedServerIdx >= 0) {
+                        api.reportTimeline(g_servers[g_selectedServerIdx], g_nowPlayingItem, g_nowPlayingItem.durationMs, "stopped");
+                    }
+                    if (canPlayNext()) {
+                        playNextTrack(audioPlayer, videoPlayer, api);
+                    } else {
+                        g_hasNowPlaying = false;
+                        g_controlsExpanded = false;
+#ifdef __3DS__
+                        osSetSpeedupEnable(false);
+#endif
                     }
                 }
-                if (!g_nowPlayingItem.isOffline && !g_servers.empty() && g_selectedServerIdx >= 0) {
-                    api.reportTimeline(g_servers[g_selectedServerIdx], g_nowPlayingItem, g_nowPlayingItem.durationMs, "stopped");
-                }
-            }
-            if (canPlayNext()) {
-                playNextTrack(audioPlayer, videoPlayer, api);
             } else {
-                g_hasNowPlaying = false;
-                g_controlsExpanded = false;
+                bool hadPlayed = (audioPlayer.getCurrentSeconds() > 1);
+                if (!hadPlayed) {
+                    g_statusMsg = "Audio playback failed";
+                    g_hasNowPlaying = false;
+                    g_controlsExpanded = false;
 #ifdef __3DS__
-                osSetSpeedupEnable(false);
+                    osSetSpeedupEnable(false);
 #endif
+                } else if (canPlayNext()) {
+                    playNextTrack(audioPlayer, videoPlayer, api);
+                } else {
+                    g_hasNowPlaying = false;
+                    g_controlsExpanded = false;
+#ifdef __3DS__
+                    osSetSpeedupEnable(false);
+#endif
+                }
             }
         }
 

@@ -89,6 +89,9 @@ bool VideoPlayer::init() {
 
         m_texInitialized = true;
     }
+    if (!m_ringBuf) {
+        m_ringBuf = (uint8_t*)malloc(m_ringCap);
+    }
 #endif
     m_initialized = true;
     return true;
@@ -98,6 +101,10 @@ void VideoPlayer::exit() {
     if (!m_initialized) return;
     stop();
 #ifdef __3DS__
+    if (m_ringBuf) {
+        free(m_ringBuf);
+        m_ringBuf = nullptr;
+    }
     if (m_texInitialized) {
         C3D_TexDelete(&m_videoTex);
         m_texInitialized = false;
@@ -177,7 +184,9 @@ void VideoPlayer::downloadLoop() {
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 32768L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 60L);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1024L);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 60L);
 
     struct curl_slist* headers = nullptr;
     headers = curl_slist_append(headers, "User-Agent: Plex3DS/1.0");
@@ -190,7 +199,7 @@ void VideoPlayer::downloadLoop() {
     m_statusMsg = "Connecting to Plex transcode server...";
     CURLcode res = curl_easy_perform(curl);
     if (res != CURLE_OK && !m_stopRequested.load() && !g_appExiting.load()) {
-        m_statusMsg = std::string("Curl: ") + curl_easy_strerror(res);
+        m_statusMsg = std::string("Network error: ") + curl_easy_strerror(res);
     }
 
     curl_slist_free_all(headers);
@@ -211,37 +220,60 @@ void VideoPlayer::decodeLoop() {
             return;
         }
     } else {
-        m_statusMsg = "Buffering stream from Plex...";
+        m_statusMsg = "Connecting to Plex transcode server...";
         // Wait until at least 256 KB is in the ring buffer before opening container
         while (m_ringSize.load() < 256 * 1024 && !m_downloadFinished.load()) {
-            if (m_stopRequested.load()) return;
+            if (m_stopRequested.load() || g_appExiting.load()) {
+                m_isPlaying = false;
+                return;
+            }
             svcSleepThread(10000000); // 10ms
         }
 
-        if (m_stopRequested.load()) return;
+        if (m_stopRequested.load() || g_appExiting.load()) {
+            m_isPlaying = false;
+            return;
+        }
+
+        if (m_ringSize.load() == 0 && m_downloadFinished.load()) {
+            if (m_statusMsg.find("Network error") == std::string::npos && m_statusMsg.find("Curl:") == std::string::npos) {
+                m_statusMsg = "Plex server returned empty stream";
+            }
+            m_isPlaying = false;
+            return;
+        }
 
         m_statusMsg = "Opening container...";
         const size_t AVIO_BUF_SIZE = 32 * 1024;
         avioBuf = (unsigned char*)av_malloc(AVIO_BUF_SIZE);
-        if (!avioBuf) return;
+        if (!avioBuf) {
+            m_statusMsg = "Out of memory (avio)";
+            m_isPlaying = false;
+            return;
+        }
 
         avioCtx = avio_alloc_context(avioBuf, AVIO_BUF_SIZE, 0, this, readPacketCallback, NULL, NULL);
         if (!avioCtx) {
             av_free(avioBuf);
+            m_statusMsg = "Failed to allocate AVIO";
+            m_isPlaying = false;
             return;
         }
 
         fmtCtx = avformat_alloc_context();
         if (!fmtCtx) {
             avio_context_free(&avioCtx);
+            m_statusMsg = "Failed to allocate format context";
+            m_isPlaying = false;
             return;
         }
         fmtCtx->pb = avioCtx;
 
         if (avformat_open_input(&fmtCtx, NULL, NULL, NULL) < 0) {
-            m_statusMsg = "Failed to open video container";
+            m_statusMsg = "Failed to parse video stream";
             avformat_free_context(fmtCtx);
             avio_context_free(&avioCtx);
+            m_isPlaying = false;
             return;
         }
     }
@@ -251,6 +283,7 @@ void VideoPlayer::decodeLoop() {
         m_statusMsg = "Failed to find stream info";
         avformat_close_input(&fmtCtx);
         if (avioCtx) avio_context_free(&avioCtx);
+        m_isPlaying = false;
         return;
     }
 
@@ -274,9 +307,10 @@ void VideoPlayer::decodeLoop() {
     }
 
     if (videoStreamIdx == -1) {
-        m_statusMsg = "No video stream found in MKV";
+        m_statusMsg = "No video stream found in stream";
         avformat_close_input(&fmtCtx);
         avio_context_free(&avioCtx);
+        m_isPlaying = false;
         return;
     }
 
@@ -286,6 +320,7 @@ void VideoPlayer::decodeLoop() {
         m_statusMsg = "H.264 decoder not available";
         avformat_close_input(&fmtCtx);
         avio_context_free(&avioCtx);
+        m_isPlaying = false;
         return;
     }
 
@@ -293,6 +328,7 @@ void VideoPlayer::decodeLoop() {
     if (!codecCtx) {
         avformat_close_input(&fmtCtx);
         avio_context_free(&avioCtx);
+        m_isPlaying = false;
         return;
     }
 
@@ -300,6 +336,7 @@ void VideoPlayer::decodeLoop() {
         avcodec_free_context(&codecCtx);
         avformat_close_input(&fmtCtx);
         avio_context_free(&avioCtx);
+        m_isPlaying = false;
         return;
     }
 
@@ -312,6 +349,7 @@ void VideoPlayer::decodeLoop() {
         avcodec_free_context(&codecCtx);
         avformat_close_input(&fmtCtx);
         avio_context_free(&avioCtx);
+        m_isPlaying = false;
         return;
     }
 
@@ -372,8 +410,9 @@ void VideoPlayer::decodeLoop() {
         SWS_FAST_BILINEAR, NULL, NULL, NULL
     );
 
-    uint16_t* rgb565Buf = (uint16_t*)linearAlloc(dstW * dstH * sizeof(uint16_t));
+    uint16_t* rgb565Buf = (uint16_t*)av_malloc(dstW * dstH * sizeof(uint16_t));
     if (!rgb565Buf) {
+        m_statusMsg = "Out of memory (RGB buffer)";
         if (swsCtx) sws_freeContext(swsCtx);
         avcodec_free_context(&codecCtx);
         if (aCodecCtx) avcodec_free_context(&aCodecCtx);
@@ -381,6 +420,7 @@ void VideoPlayer::decodeLoop() {
         if (audioPcmPool) linearFree(audioPcmPool);
         avformat_close_input(&fmtCtx);
         avio_context_free(&avioCtx);
+        m_isPlaying = false;
         return;
     }
 
@@ -577,7 +617,7 @@ void VideoPlayer::decodeLoop() {
     av_frame_free(&aFrame);
     av_frame_free(&frame);
     av_packet_free(&pkt);
-    linearFree(rgb565Buf);
+    av_free(rgb565Buf);
     if (swsCtx) sws_freeContext(swsCtx);
     avcodec_free_context(&codecCtx);
     avformat_close_input(&fmtCtx);
@@ -628,6 +668,11 @@ bool VideoPlayer::start(const std::string& streamUrl, int64_t durationMs, int64_
     m_ringSize = 0;
     m_downloadFinished = false;
     m_statusMsg = "Initializing...";
+#ifdef __3DS__
+    m_connectStartTick = osGetTime();
+#else
+    m_connectStartTick = (uint64_t)time(nullptr) * 1000;
+#endif
 
     m_isLocalFile = (streamUrl.rfind("http://", 0) != 0 && streamUrl.rfind("https://", 0) != 0);
 
@@ -658,7 +703,7 @@ bool VideoPlayer::start(const std::string& streamUrl, int64_t durationMs, int64_
 #ifdef __3DS__
     if (!m_isLocalFile) {
         if (!m_ringBuf) {
-            m_ringBuf = (uint8_t*)linearAlloc(m_ringCap);
+            m_ringBuf = (uint8_t*)malloc(m_ringCap);
             if (!m_ringBuf) {
                 m_isPlaying = false;
                 return false;
@@ -713,20 +758,16 @@ void VideoPlayer::stop() {
 
 #ifdef __3DS__
     if (m_decodeThread) {
-        threadJoin(m_decodeThread, 1000000000ULL);
+        threadJoin(m_decodeThread, U64_MAX);
         threadFree(m_decodeThread);
         m_decodeThread = nullptr;
     }
     if (m_downloadThread) {
-        threadJoin(m_downloadThread, 1000000000ULL);
+        threadJoin(m_downloadThread, U64_MAX);
         threadFree(m_downloadThread);
         m_downloadThread = nullptr;
     }
     ndspChnReset(m_audioChannel);
-    if (m_ringBuf) {
-        linearFree(m_ringBuf);
-        m_ringBuf = nullptr;
-    }
 #endif
     m_isPlaying = false;
     m_hasFrame = false;

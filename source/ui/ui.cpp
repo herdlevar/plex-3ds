@@ -193,18 +193,40 @@ void UIRenderer::renderTopScreen(AppState state,
             // Connecting or buffering
             drawHeader("NOW PLAYING VIDEO", 400);
             if (nowPlayingItem) {
-                drawText(20, 45, 0.65f, COLOR_PLEX_ORANGE, nowPlayingItem->title);
+                drawText(20, 42, 0.65f, COLOR_PLEX_ORANGE, nowPlayingItem->title);
                 if (!nowPlayingItem->parentTitle.empty()) {
-                    drawText(20, 75, 0.5f, COLOR_WHITE, nowPlayingItem->parentTitle);
+                    drawText(20, 68, 0.5f, COLOR_WHITE, nowPlayingItem->parentTitle);
                 }
             } else {
-                drawText(20, 45, 0.65f, COLOR_PLEX_ORANGE, "Streaming Video...");
+                drawText(20, 42, 0.65f, COLOR_PLEX_ORANGE, "Streaming Video...");
             }
-            drawText(20, 105, 0.5f, COLOR_WHITE, videoPlayer->getStatusMessage());
+
+            static const char* s_spinners[] = { "|", "/", "-", "\\" };
+            static uint32_t s_spinTick = 0;
+            s_spinTick++;
+            const char* spin = s_spinners[(s_spinTick / 8) % 4];
+
+            int elapsed = videoPlayer->getElapsedConnectSec();
             int64_t kb = videoPlayer->getBytesReceived() / 1024;
-            drawText(20, 130, 0.45f, COLOR_GRAY, "Buffer: " + std::to_string(kb) + " KB downloaded");
-            drawText(20, 155, 0.45f, COLOR_GRAY, "Plex is transcoding to 400x240 H.264 / AAC...");
-            drawText(20, 195, 0.45f, COLOR_GRAY, "(Controls on bottom screen | Browse library anytime)");
+
+            if (kb == 0) {
+                std::string statusLine = videoPlayer->getStatusMessage();
+                if (statusLine == "Connecting to Plex transcode server..." || statusLine == "Buffering stream from Plex...") {
+                    statusLine = "Connecting to Plex transcoder " + std::string(spin) + " (" + std::to_string(elapsed) + "s)";
+                }
+                drawText(20, 96, 0.5f, COLOR_WHITE, statusLine);
+                drawText(20, 122, 0.45f, COLOR_PLEX_ORANGE, "Server is preparing H.264 video stream...");
+                drawText(20, 146, 0.42f, COLOR_GRAY, "Initial transcode startup typically takes 10-15s");
+            } else {
+                drawText(20, 96, 0.5f, COLOR_WHITE, "Buffering stream: " + std::to_string(kb) + " KB / 256 KB " + std::string(spin));
+                // Buffer progress bar
+                C2D_DrawRectSolid(20, 122, 0.5f, 360, 8, COLOR_PANEL_BG);
+                float bufRatio = std::clamp((float)kb / 256.0f, 0.0f, 1.0f);
+                C2D_DrawRectSolid(20, 122, 0.5f, bufRatio * 360.0f, 8, COLOR_PLEX_ORANGE);
+                drawText(20, 146, 0.42f, COLOR_GRAY, "Starting video playback when pre-buffer fills...");
+            }
+
+            drawText(20, 185, 0.42f, COLOR_GRAY, "(Controls on bottom screen | Browse library anytime)");
             return;
         }
     }

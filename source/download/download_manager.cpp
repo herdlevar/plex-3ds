@@ -401,7 +401,7 @@ bool DownloadManager::startDownload(const PlexMediaItem& item, const std::string
 
 #ifdef __3DS__
     if (m_thread) {
-        threadJoin(m_thread, 1000000000ULL);
+        threadJoin(m_thread, U64_MAX);
         threadFree(m_thread);
         m_thread = nullptr;
     }
@@ -419,7 +419,7 @@ void DownloadManager::cancelDownload() {
     m_cancelRequested = true;
 #ifdef __3DS__
     if (m_thread) {
-        threadJoin(m_thread, 1000000000ULL);
+        threadJoin(m_thread, U64_MAX);
         threadFree(m_thread);
         m_thread = nullptr;
     }

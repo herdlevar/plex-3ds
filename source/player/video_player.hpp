@@ -40,6 +40,15 @@ public:
     int64_t getBytesReceived() const { return m_bytesReceived.load(); }
     std::string getStatusMessage() const { return m_statusMsg; }
     bool isLocalFile() const { return m_isLocalFile.load(); }
+    int getElapsedConnectSec() const {
+        if (m_connectStartTick == 0) return 0;
+#ifdef __3DS__
+        uint64_t now = osGetTime();
+#else
+        uint64_t now = (uint64_t)time(nullptr) * 1000;
+#endif
+        return (now >= m_connectStartTick) ? (int)((now - m_connectStartTick) / 1000) : 0;
+    }
 
 #ifdef __3DS__
     C2D_Image getImage() const { return m_videoImage; }
@@ -60,6 +69,7 @@ private:
     std::atomic<bool> m_isLocalFile{false};
     std::string m_currentUrl;
     std::string m_statusMsg{"Idle"};
+    std::atomic<uint64_t> m_connectStartTick{0};
     bool m_initialized = false;
 
 #ifdef __3DS__

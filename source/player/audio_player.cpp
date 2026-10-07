@@ -30,6 +30,9 @@ bool AudioPlayer::init() {
     mix[1] = 1.0f;
     ndspChnSetMix(m_channel, mix);
 #endif
+    if (!m_ringBuf) {
+        m_ringBuf = (uint8_t*)malloc(m_ringCap);
+    }
     m_initialized = true;
     return true;
 }
@@ -37,6 +40,10 @@ bool AudioPlayer::init() {
 void AudioPlayer::exit() {
     if (!m_initialized) return;
     stop();
+    if (m_ringBuf) {
+        free(m_ringBuf);
+        m_ringBuf = nullptr;
+    }
     m_initialized = false;
 }
 
@@ -325,10 +332,12 @@ bool AudioPlayer::play(const std::string& audioUrl, int totalSec) {
     m_downloadFinished = false;
 
 #ifdef __3DS__
-    m_ringBuf = (uint8_t*)linearAlloc(m_ringCap);
     if (!m_ringBuf) {
-        m_isPlaying = false;
-        return false;
+        m_ringBuf = (uint8_t*)malloc(m_ringCap);
+        if (!m_ringBuf) {
+            m_isPlaying = false;
+            return false;
+        }
     }
 
     m_downloadThread = threadCreate(downloadThreadEntry, this, 64 * 1024, 0x31, -2, false);
@@ -369,20 +378,16 @@ void AudioPlayer::stop() {
 
 #ifdef __3DS__
     if (m_decodeThread) {
-        threadJoin(m_decodeThread, 1000000000ULL);
+        threadJoin(m_decodeThread, U64_MAX);
         threadFree(m_decodeThread);
         m_decodeThread = nullptr;
     }
     if (m_downloadThread) {
-        threadJoin(m_downloadThread, 1000000000ULL);
+        threadJoin(m_downloadThread, U64_MAX);
         threadFree(m_downloadThread);
         m_downloadThread = nullptr;
     }
     ndspChnReset(m_channel);
-    if (m_ringBuf) {
-        linearFree(m_ringBuf);
-        m_ringBuf = nullptr;
-    }
 #endif
     m_isPlaying = false;
 }
