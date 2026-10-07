@@ -8,6 +8,7 @@
 #include <curl/curl.h>
 #include <cstring>
 #include <algorithm>
+#include <unistd.h>
 
 AudioPlayer::AudioPlayer() {}
 
@@ -35,8 +36,8 @@ bool AudioPlayer::init() {
 }
 
 void AudioPlayer::clearChunks() {
-    size_t count = m_chunkCount.load();
-    for (size_t i = 0; i < count; i++) {
+    std::lock_guard<std::mutex> lock(m_chunkMutex);
+    for (size_t i = 0; i < MAX_CHUNKS; i++) {
         if (m_chunks[i]) {
             free(m_chunks[i]);
             m_chunks[i] = nullptr;
@@ -61,30 +62,34 @@ int AudioPlayer::readStream(uint8_t* buf, int maxBytes) {
     while (true) {
         if (m_stopRequested.load() || g_appExiting.load()) return -1;
 
-        size_t count = m_chunkCount.load();
-        if (m_readChunkIdx < count) {
-            AudioChunk* curChunk = m_chunks[m_readChunkIdx];
-            if (curChunk) {
-                size_t chunkSize = curChunk->size;
-                if (m_readChunkOffset < chunkSize) {
-                    size_t avail = chunkSize - m_readChunkOffset;
-                    size_t toRead = std::min((size_t)maxBytes, avail);
-                    memcpy(buf, curChunk->data + m_readChunkOffset, toRead);
-                    m_readChunkOffset += toRead;
-                    if (m_readChunkOffset >= AudioChunk::CHUNK_SIZE) {
+        {
+            std::lock_guard<std::mutex> lock(m_chunkMutex);
+            size_t count = m_chunkCount.load();
+            if (m_readChunkIdx < count) {
+                AudioChunk* curChunk = m_chunks[m_readChunkIdx];
+                if (curChunk) {
+                    size_t chunkSize = curChunk->size;
+                    if (m_readChunkOffset < chunkSize) {
+                        size_t avail = chunkSize - m_readChunkOffset;
+                        size_t toRead = std::min((size_t)maxBytes, avail);
+                        memcpy(buf, curChunk->data + m_readChunkOffset, toRead);
+                        m_readChunkOffset += toRead;
+                        if (m_readChunkOffset >= AudioChunk::CHUNK_SIZE) {
+                            m_readChunkIdx++;
+                            m_readChunkOffset = 0;
+                        }
+                        return (int)toRead;
+                    } else if (m_readChunkOffset >= AudioChunk::CHUNK_SIZE) {
                         m_readChunkIdx++;
                         m_readChunkOffset = 0;
+                        continue;
                     }
-                    return (int)toRead;
-                } else if (m_readChunkOffset >= AudioChunk::CHUNK_SIZE) {
-                    m_readChunkIdx++;
-                    m_readChunkOffset = 0;
-                    continue;
                 }
             }
         }
 
         if (m_downloadFinished.load()) {
+            std::lock_guard<std::mutex> lock(m_chunkMutex);
             size_t finalCount = m_chunkCount.load();
             if (m_readChunkIdx >= finalCount ||
                 (m_readChunkIdx == finalCount - 1 && m_chunks[m_readChunkIdx] && m_readChunkOffset >= m_chunks[m_readChunkIdx]->size)) {
@@ -115,21 +120,25 @@ void AudioPlayer::downloadLoop() {
     if (isLocal) {
         FILE* f = fopen(m_currentUrl.c_str(), "rb");
         if (f) {
-            uint8_t tempBuf[AudioChunk::CHUNK_SIZE];
             while (!m_stopRequested.load() && !g_appExiting.load()) {
-                size_t n = fread(tempBuf, 1, sizeof(tempBuf), f);
-                if (n == 0) break;
-
                 size_t count = m_chunkCount.load();
                 if (count >= MAX_CHUNKS) break;
 
                 AudioChunk* chunk = (AudioChunk*)malloc(sizeof(AudioChunk));
                 if (!chunk) break;
 
-                memcpy(chunk->data, tempBuf, n);
+                size_t n = fread(chunk->data, 1, AudioChunk::CHUNK_SIZE, f);
+                if (n == 0) {
+                    free(chunk);
+                    break;
+                }
+
                 chunk->size = n;
-                m_chunks[count] = chunk;
-                m_chunkCount = count + 1;
+                {
+                    std::lock_guard<std::mutex> lock(m_chunkMutex);
+                    m_chunks[count] = chunk;
+                    m_chunkCount = count + 1;
+                }
                 m_totalDownloadedBytes += n;
             }
             fclose(f);
@@ -159,26 +168,44 @@ void AudioPlayer::downloadLoop() {
         size_t remaining = totalBytes;
 
         while (remaining > 0 && !p->m_stopRequested.load() && !g_appExiting.load()) {
-            size_t count = p->m_chunkCount.load();
+#ifdef __3DS__
+            if (p->m_isPaused.load() || g_isSuspended.load()) {
+                svcSleepThread(50000000); // 50ms wait while paused/suspended
+                continue;
+            }
+#endif
             AudioChunk* curChunk = nullptr;
+            size_t count = 0;
+            {
+                std::lock_guard<std::mutex> lock(p->m_chunkMutex);
+                count = p->m_chunkCount.load();
+                if (count > 0 && p->m_chunks[count - 1] && p->m_chunks[count - 1]->size < AudioChunk::CHUNK_SIZE) {
+                    curChunk = p->m_chunks[count - 1];
+                }
+            }
 
-            if (count > 0 && p->m_chunks[count - 1] && p->m_chunks[count - 1]->size < AudioChunk::CHUNK_SIZE) {
-                curChunk = p->m_chunks[count - 1];
-            } else {
+            if (!curChunk) {
                 if (count >= MAX_CHUNKS) {
                     // Buffer reached 32 MB cap (~22 minutes of audio). Wait for decoder before fetching more.
+#ifdef __3DS__
                     svcSleepThread(20000000); // 20ms
+#endif
                     continue;
                 }
                 curChunk = (AudioChunk*)malloc(sizeof(AudioChunk));
                 if (!curChunk) {
                     // Memory low: sleep and retry
+#ifdef __3DS__
                     svcSleepThread(50000000);
+#endif
                     continue;
                 }
                 curChunk->size = 0;
-                p->m_chunks[count] = curChunk;
-                p->m_chunkCount = count + 1;
+                {
+                    std::lock_guard<std::mutex> lock(p->m_chunkMutex);
+                    p->m_chunks[count] = curChunk;
+                    p->m_chunkCount = count + 1;
+                }
             }
 
             size_t spaceInChunk = AudioChunk::CHUNK_SIZE - curChunk->size;
@@ -209,6 +236,13 @@ void AudioPlayer::downloadLoop() {
     curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 32768L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
+
+    if (access("/etc/ssl/certs/cacert.pem", R_OK) == 0) {
+        curl_easy_setopt(curl, CURLOPT_CAINFO, "/etc/ssl/certs/cacert.pem");
+    } else {
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    }
 
     struct curl_slist* headers = nullptr;
     headers = curl_slist_append(headers, "User-Agent: Plex3DS/1.0");
@@ -268,11 +302,30 @@ void AudioPlayer::decodeLoop() {
     }
 
     while (!m_stopRequested.load() && !g_appExiting.load()) {
-        while (m_isPaused.load()) {
+        if (m_isPaused.load() || g_isSuspended.load()) {
+            m_decodePaused = true;
+            while ((m_isPaused.load() || g_isSuspended.load()) && !m_stopRequested.load() && !g_appExiting.load()) {
+                svcSleepThread(20000000); // 20ms
+            }
+            m_decodePaused = false;
             if (m_stopRequested.load() || g_appExiting.load()) break;
-            svcSleepThread(20000000); // 20ms
+
+            if (formatSet) {
+                ndspChnInitParams(m_channel);
+                ndspChnSetRate(m_channel, (float)m_sampleRate.load());
+                ndspChnSetFormat(m_channel, (m_channels.load() == 2) ? NDSP_FORMAT_STEREO_PCM16 : NDSP_FORMAT_MONO_PCM16);
+                ndspChnSetInterp(m_channel, NDSP_INTERP_LINEAR);
+                float mix[12];
+                memset(mix, 0, sizeof(mix));
+                mix[0] = 1.0f;
+                mix[1] = 1.0f;
+                ndspChnSetMix(m_channel, mix);
+                ndspChnSetPaused(m_channel, false);
+            }
+            for (size_t i = 0; i < NUM_BUFFERS; i++) {
+                waveBuf[i].status = NDSP_WBUF_DONE;
+            }
         }
-        if (m_stopRequested.load() || g_appExiting.load()) break;
 
         // Ensure next waveBuf is available
         if (waveBuf[currentBuf].status != NDSP_WBUF_DONE) {
@@ -289,6 +342,8 @@ void AudioPlayer::decodeLoop() {
             if (mpg123_getformat(mh, &rate, &ch, &enc) == MPG123_OK) {
                 curRate = rate > 0 ? rate : 44100;
                 channels = ch;
+                m_sampleRate = curRate;
+                m_channels = channels;
                 ndspChnSetRate(m_channel, (float)curRate);
                 ndspChnSetFormat(m_channel, (channels == 2) ? NDSP_FORMAT_STEREO_PCM16 : NDSP_FORMAT_MONO_PCM16);
                 formatSet = true;
@@ -370,14 +425,14 @@ bool AudioPlayer::play(const std::string& audioUrl, int totalSec) {
     m_downloadFinished = false;
 
 #ifdef __3DS__
-    m_downloadThread = threadCreate(downloadThreadEntry, this, 64 * 1024, 0x31, -2, false);
+    m_downloadThread = threadCreate(downloadThreadEntry, this, 128 * 1024, 0x31, -2, false);
     if (!m_downloadThread) {
-        m_downloadThread = threadCreate(downloadThreadEntry, this, 64 * 1024, 0x31, -1, false);
+        m_downloadThread = threadCreate(downloadThreadEntry, this, 128 * 1024, 0x31, -1, false);
     }
 
-    m_decodeThread = threadCreate(decodeThreadEntry, this, 64 * 1024, 0x2A, -1, false);
+    m_decodeThread = threadCreate(decodeThreadEntry, this, 128 * 1024, 0x2A, -1, false);
     if (!m_decodeThread) {
-        m_decodeThread = threadCreate(decodeThreadEntry, this, 64 * 1024, 0x2A, -2, false);
+        m_decodeThread = threadCreate(decodeThreadEntry, this, 128 * 1024, 0x2A, -2, false);
     }
 
     if (!m_downloadThread || !m_decodeThread) {
@@ -392,14 +447,29 @@ void AudioPlayer::pause() {
     m_isPaused = true;
 #ifdef __3DS__
     ndspChnSetPaused(m_channel, true);
+    for (int i = 0; i < 10 && !m_decodePaused.load(); ++i) {
+        svcSleepThread(10000000); // 10ms
+    }
+    ndspChnReset(m_channel);
 #endif
 }
 
 void AudioPlayer::resume() {
-    m_isPaused = false;
 #ifdef __3DS__
-    ndspChnSetPaused(m_channel, false);
+    if (m_initialized) {
+        ndspChnInitParams(m_channel);
+        ndspChnSetRate(m_channel, (float)m_sampleRate.load());
+        ndspChnSetFormat(m_channel, (m_channels.load() == 2) ? NDSP_FORMAT_STEREO_PCM16 : NDSP_FORMAT_MONO_PCM16);
+        ndspChnSetInterp(m_channel, NDSP_INTERP_LINEAR);
+        float mix[12];
+        memset(mix, 0, sizeof(mix));
+        mix[0] = 1.0f;
+        mix[1] = 1.0f;
+        ndspChnSetMix(m_channel, mix);
+        ndspChnSetPaused(m_channel, false);
+    }
 #endif
+    m_isPaused = false;
 }
 
 void AudioPlayer::stop() {

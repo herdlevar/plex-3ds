@@ -37,6 +37,7 @@ public:
     int getCurrentSeconds() const { return (int)(m_currentTimeMs.load() / 1000); }
     int getTotalSeconds() const { return (int)(m_durationMs.load() / 1000); }
     void setDurationMs(int64_t durMs) { m_durationMs = durMs; }
+    void setClientIdentifier(const std::string& id) { m_clientIdentifier = id; }
     int64_t getBytesReceived() const { return m_bytesReceived.load(); }
     std::string getStatusMessage() const { return m_statusMsg; }
     bool isLocalFile() const { return m_isLocalFile.load(); }
@@ -67,6 +68,7 @@ private:
     std::atomic<int64_t> m_initialOffsetMs{0};
     std::atomic<int64_t> m_bytesReceived{0};
     std::atomic<bool> m_isLocalFile{false};
+    std::string m_clientIdentifier;
     std::string m_currentUrl;
     std::string m_statusMsg{"Idle"};
     std::atomic<uint64_t> m_connectStartTick{0};

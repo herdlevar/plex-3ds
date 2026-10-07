@@ -7,6 +7,7 @@
 #include <curl/curl.h>
 #include <cstring>
 #include <algorithm>
+#include <unistd.h>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -145,6 +146,12 @@ void VideoPlayer::downloadLoop() {
         const uint8_t* src = (const uint8_t*)ptr;
         size_t remaining = totalBytes;
         while (remaining > 0 && !p->m_stopRequested.load() && !g_appExiting.load()) {
+#ifdef __3DS__
+            if (p->m_isPaused.load() || g_isSuspended.load()) {
+                svcSleepThread(50000000); // 50ms wait while paused/suspended
+                continue;
+            }
+#endif
             size_t currentSize = p->m_ringSize.load();
             size_t space = (currentSize < p->m_ringCap) ? (p->m_ringCap - 1 - currentSize) : 0;
             if (space == 0) {
@@ -188,10 +195,18 @@ void VideoPlayer::downloadLoop() {
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1024L);
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 60L);
 
+    if (access("/etc/ssl/certs/cacert.pem", R_OK) == 0) {
+        curl_easy_setopt(curl, CURLOPT_CAINFO, "/etc/ssl/certs/cacert.pem");
+    } else {
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    }
+
     struct curl_slist* headers = nullptr;
     headers = curl_slist_append(headers, "User-Agent: Plex3DS/1.0");
     headers = curl_slist_append(headers, "Accept: */*");
-    headers = curl_slist_append(headers, "X-Plex-Client-Identifier: Plex3DS-Client-001");
+    std::string clientIdHdr = "X-Plex-Client-Identifier: " + (m_clientIdentifier.empty() ? "Plex3DS-Client-001" : m_clientIdentifier);
+    headers = curl_slist_append(headers, clientIdHdr.c_str());
     headers = curl_slist_append(headers, "X-Plex-Client-Profile-Name: Generic");
     headers = curl_slist_append(headers, "X-Plex-Client-Profile-Extra: add-transcode-target(type=videoProfile&context=streaming&protocol=http&container=mkv&videoCodec=h264&audioCodec=aac)");
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
@@ -452,10 +467,9 @@ void VideoPlayer::decodeLoop() {
     int dstLinesize[4] = { dstW * (int)sizeof(uint16_t), 0, 0, 0 };
 
     while (!m_stopRequested.load() && !g_appExiting.load()) {
-        if (m_isPaused.load()) {
+        if (m_isPaused.load() || g_isSuspended.load()) {
             uint64_t pauseStart = osGetTime();
-            while (m_isPaused.load()) {
-                if (m_stopRequested.load() || g_appExiting.load()) break;
+            while ((m_isPaused.load() || g_isSuspended.load()) && !m_stopRequested.load() && !g_appExiting.load()) {
                 svcSleepThread(20000000); // 20ms
             }
             playbackStartTick += (osGetTime() - pauseStart);
@@ -711,7 +725,10 @@ bool VideoPlayer::start(const std::string& streamUrl, int64_t durationMs, int64_
         }
 
         // Spawn download thread (priority 0x31)
-        m_downloadThread = threadCreate(downloadThreadEntry, this, 64 * 1024, 0x31, -2, false);
+        m_downloadThread = threadCreate(downloadThreadEntry, this, 128 * 1024, 0x31, -2, false);
+        if (!m_downloadThread) {
+            m_downloadThread = threadCreate(downloadThreadEntry, this, 128 * 1024, 0x31, -1, false);
+        }
         if (!m_downloadThread) {
             m_isPlaying = false;
             return false;
@@ -742,14 +759,16 @@ void VideoPlayer::pause() {
     m_isPaused = true;
 #ifdef __3DS__
     ndspChnSetPaused(m_audioChannel, true);
+    ndspChnReset(m_audioChannel);
 #endif
 }
 
 void VideoPlayer::resume() {
-    m_isPaused = false;
 #ifdef __3DS__
+    ndspChnInitParams(m_audioChannel);
     ndspChnSetPaused(m_audioChannel, false);
 #endif
+    m_isPaused = false;
 }
 
 void VideoPlayer::stop() {

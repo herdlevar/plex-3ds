@@ -290,6 +290,9 @@ void DownloadManager::downloadLoop() {
         {
             std::lock_guard<std::mutex> lock(m_queueMutex);
             if (m_queue.empty()) {
+                m_isDownloading = false;
+                m_totalQueueCount = 0;
+                m_currentQueueIndex = 0;
                 break;
             }
             current = m_queue.front();
@@ -348,6 +351,10 @@ void DownloadManager::downloadLoop() {
         auto writeCb = [](void* ptr, size_t size, size_t nmemb, void* userdata) -> size_t {
             DownloadContext* dc = (DownloadContext*)userdata;
             if (dc->mgr->m_cancelRequested.load() || g_appExiting.load()) return 0;
+            while (g_isSuspended.load() && !dc->mgr->m_cancelRequested.load() && !g_appExiting.load()) {
+                svcSleepThread(50000000); // 50ms pause during Home Menu
+            }
+            if (dc->mgr->m_cancelRequested.load() || g_appExiting.load()) return 0;
             return fwrite(ptr, size, nmemb, dc->fp);
         };
 
@@ -386,10 +393,23 @@ void DownloadManager::downloadLoop() {
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
 
+        static const char* CA_BUNDLE_PATH = "sdmc:/3ds/plex-3ds/cacert.pem";
+        FILE* caF = fopen(CA_BUNDLE_PATH, "rb");
+        if (caF) {
+            fclose(caF);
+            curl_easy_setopt(curl, CURLOPT_CAINFO, CA_BUNDLE_PATH);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+        } else {
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+        }
+
         struct curl_slist* headers = nullptr;
         headers = curl_slist_append(headers, "User-Agent: Plex3DS/1.0");
         headers = curl_slist_append(headers, "Accept: */*");
-        headers = curl_slist_append(headers, "X-Plex-Client-Identifier: Plex3DS-Client-001");
+        std::string clientId = m_clientIdentifier.empty() ? "Plex3DS-Client-001" : m_clientIdentifier;
+        headers = curl_slist_append(headers, ("X-Plex-Client-Identifier: " + clientId).c_str());
         headers = curl_slist_append(headers, "X-Plex-Client-Profile-Name: Generic");
         if (current.item.type == MediaType::TRACK) {
             headers = curl_slist_append(headers, "X-Plex-Client-Profile-Extra: add-transcode-target(type=musicProfile&context=streaming&protocol=http&container=mp3&audioCodec=mp3)");
@@ -443,12 +463,6 @@ void DownloadManager::downloadLoop() {
         }
     }
 
-    {
-        std::lock_guard<std::mutex> lock(m_queueMutex);
-        m_queue.clear();
-        m_totalQueueCount = 0;
-        m_currentQueueIndex = 0;
-    }
     m_isDownloading = false;
     {
         std::lock_guard<std::mutex> lock(m_progressMutex);
@@ -515,9 +529,9 @@ int DownloadManager::queueDownloads(const std::vector<std::pair<PlexMediaItem, s
             threadFree(m_thread);
             m_thread = nullptr;
         }
-        m_thread = threadCreate(downloadThreadEntry, this, 64 * 1024, 0x31, -2, false);
+        m_thread = threadCreate(downloadThreadEntry, this, 128 * 1024, 0x31, -2, false);
         if (!m_thread) {
-            m_thread = threadCreate(downloadThreadEntry, this, 64 * 1024, 0x31, -1, false);
+            m_thread = threadCreate(downloadThreadEntry, this, 128 * 1024, 0x31, -1, false);
         }
         if (!m_thread) {
             m_isDownloading = false;

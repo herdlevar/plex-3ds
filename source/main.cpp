@@ -57,10 +57,10 @@ static int g_playlistIndex = -1;
 static DownloadManager g_downloadManager;
 
 std::atomic<bool> g_appExiting{false};
+std::atomic<bool> g_isSuspended{false};
 
 #ifdef __3DS__
 static aptHookCookie g_aptCookie;
-static std::atomic<bool> g_isSuspended{false};
 static bool g_videoWasPlayingOnSuspend = false;
 static bool g_audioWasPlayingOnSuspend = false;
 
@@ -87,6 +87,7 @@ static void onAptHook(APT_HookType hook, void* param) {
                 break;
             }
             g_isSuspended = true;
+            aptSetSleepAllowed(true);
             if (s_bottomScreenOff) {
                 s_bottomScreenOff = false;
                 GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_BOTTOM);
@@ -114,6 +115,10 @@ static void onAptHook(APT_HookType hook, void* param) {
                 g_videoWasPlayingOnSuspend = true;
                 g_pVideoPlayer->pause();
             }
+            if (g_pAudioPlayer && g_pAudioPlayer->isPlaying() && !g_pAudioPlayer->isPaused()) {
+                g_audioWasPlayingOnSuspend = true;
+                g_pAudioPlayer->pause();
+            }
             ndspSetMasterVol(0.0f);
             break;
 
@@ -131,6 +136,7 @@ static void onAptHook(APT_HookType hook, void* param) {
             s_shellClosed = false;
             s_lastUserActivityTime = osGetTime();
             g_isSuspended = false;
+            aptSetSleepAllowed(!(g_pAudioPlayer && g_pAudioPlayer->isPlaying() && !g_pAudioPlayer->isPaused()));
             break;
 
         case APTHOOK_ONEXIT:
@@ -802,6 +808,8 @@ int main(int argc, char* argv[]) {
 
     // Try loading saved configuration
     loadConfig();
+    g_downloadManager.setClientIdentifier(g_config.clientIdentifier);
+    videoPlayer.setClientIdentifier(g_config.clientIdentifier);
     loadResume();
 
     // If username is empty but token is present, try fetching user info

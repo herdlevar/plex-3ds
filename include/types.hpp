@@ -6,6 +6,7 @@
 #include <atomic>
 
 extern std::atomic<bool> g_appExiting;
+extern std::atomic<bool> g_isSuspended;
 
 enum class AppState {
     PIN_AUTH,         // Showing 4-letter PIN code on screen

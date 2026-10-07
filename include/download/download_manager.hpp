@@ -55,8 +55,10 @@ public:
     bool isDownloading() const { return m_isDownloading.load(); }
     DownloadProgress getProgress();
     int getQueueSize();
+    void setClientIdentifier(const std::string& clientId) { m_clientIdentifier = clientId; }
 
 private:
+    std::string m_clientIdentifier;
     std::atomic<bool> m_isDownloading{false};
     std::atomic<bool> m_cancelRequested{false};
 
