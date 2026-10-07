@@ -1,0 +1,36 @@
+# devkitARM / Nintendo 3DS Build Outputs
+build/
+*.3dsx
+*.elf
+*.smdh
+*.cia
+*.map
+*.o
+*.d
+*.bin
+*.cro
+*.crs
+
+# User Credentials, Configuration & Downloads
+config.json
+resume.json
+downloads/
+cacert.pem
+
+# Python Caches & Virtual Envs
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+env/
+venv/
+
+# Editor & System Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

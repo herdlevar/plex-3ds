@@ -1,0 +1,35 @@
+MIT License
+
+Copyright (c) 2026 Jared & Plex3DS Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+### Third-Party Licenses and Acknowledgments
+
+Plex3DS incorporates and links against the following open-source projects:
+
+- **devkitPro / libctru / citro2d / citro3d**: Nintendo 3DS homebrew SDK and hardware rendering libraries (zlib License).
+- **FFmpeg**: Multimedia transcoding, demuxing, and decoding framework (LGPL 2.1+ / GPL 2+).
+- **cJSON**: Ultra-lightweight JSON parser in ANSI C by Dave Gamble (MIT License).
+- **QR Code generator library**: High-quality QR Code generator in C by Project Nayuki (MIT License).
+- **libcurl**: Multiprotocol file transfer library by Daniel Stenberg (curl License / MIT derivative).
+- **mbedTLS**: TLS/SSL cryptographic implementation (Apache 2.0 / GPL 2.0).
+- **mpg123 / libFLAC / libogg**: High-performance audio decoding engines.

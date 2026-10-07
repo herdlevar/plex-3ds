@@ -1,0 +1,12 @@
+{
+  "clientIdentifier": "plex-3ds-client",
+  "token": "",
+  "username": "",
+  "serverName": "My Plex Server",
+  "serverUrl": "http://192.168.1.100:32400",
+  "videoResolution": "400x240",
+  "videoBitrate": 1000,
+  "subtitles": false,
+  "screenOffTimeout": 10,
+  "servers": []
+}

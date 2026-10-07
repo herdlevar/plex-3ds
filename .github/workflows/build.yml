@@ -1,0 +1,63 @@
+name: Build Plex3DS
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    name: Compile 3DS Binaries & Run Tests
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkitarm:latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          dkp-pacman -Syu --noconfirm 3ds-curl 3ds-mpg123 3ds-flac 3ds-libogg python3
+
+      - name: Run Core Test Suite
+        run: |
+          make test
+
+      - name: Build Plex3DS
+        run: |
+          make -j$(nproc)
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Plex3DS-latest
+          path: |
+            Plex3DS.3dsx
+            Plex3DS.smdh
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: Plex3DS-latest
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            Plex3DS.3dsx
+            Plex3DS.smdh
+          draft: false
+          prerelease: false
+          generate_release_notes: true
