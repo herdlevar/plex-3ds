@@ -42,14 +42,21 @@ private:
     std::atomic<int> m_totalSec{0};
     bool m_initialized = false;
     int m_channel = 0;
-    // Ring buffer for streaming
-    uint8_t* m_ringBuf = nullptr;
-    size_t m_ringCap = 512 * 1024; // 512 KB (~15-20s cushion)
-    size_t m_ringHead = 0;
-    size_t m_ringTail = 0;
-    std::atomic<size_t> m_ringSize{0};
+    // Chunked buffer for full track in-memory buffering (up to 32 MB)
+    struct AudioChunk {
+        static constexpr size_t CHUNK_SIZE = 64 * 1024; // 64 KB
+        uint8_t data[CHUNK_SIZE];
+        size_t size = 0;
+    };
+    static constexpr size_t MAX_CHUNKS = 512;
+    AudioChunk* m_chunks[MAX_CHUNKS] = {nullptr};
+    std::atomic<size_t> m_chunkCount{0};
+    size_t m_readChunkIdx = 0;
+    size_t m_readChunkOffset = 0;
+    std::atomic<size_t> m_totalDownloadedBytes{0};
     std::atomic<bool> m_downloadFinished{false};
 
+    void clearChunks();
     int readStream(uint8_t* buf, int maxBytes);
 
 #ifdef __3DS__

@@ -77,7 +77,15 @@ static VideoPlayer* g_pVideoPlayer = nullptr;
 static void onAptHook(APT_HookType hook, void* param) {
     (void)param;
     switch (hook) {
-        case APTHOOK_ONSUSPEND:
+        case APTHOOK_ONSUSPEND: {
+            u8 shellState = 1;
+            PTMU_GetShellState(&shellState);
+            bool isClosed = (shellState == 0) || s_shellClosed;
+            if (isClosed && g_pAudioPlayer && g_pAudioPlayer->isPlaying() && !g_pAudioPlayer->isPaused()) {
+                // Clamshell closed during music playback: keep playing through headphones!
+                ndspSetMasterVol(1.0f);
+                break;
+            }
             g_isSuspended = true;
             if (s_bottomScreenOff) {
                 s_bottomScreenOff = false;
@@ -87,15 +95,13 @@ static void onAptHook(APT_HookType hook, void* param) {
                 g_videoWasPlayingOnSuspend = true;
                 g_pVideoPlayer->pause();
             }
-            // Home button pressed: pause audio and mute only if shell is open (not closed for pocket playback)
-            if (!s_shellClosed) {
-                if (g_pAudioPlayer && g_pAudioPlayer->isPlaying() && !g_pAudioPlayer->isPaused()) {
-                    g_audioWasPlayingOnSuspend = true;
-                    g_pAudioPlayer->pause();
-                }
-                ndspSetMasterVol(0.0f);
+            if (g_pAudioPlayer && g_pAudioPlayer->isPlaying() && !g_pAudioPlayer->isPaused()) {
+                g_audioWasPlayingOnSuspend = true;
+                g_pAudioPlayer->pause();
             }
+            ndspSetMasterVol(0.0f);
             break;
+        }
 
         case APTHOOK_ONSLEEP:
             // If actively playing music, keep playing through headphones! Do not mute or pause.

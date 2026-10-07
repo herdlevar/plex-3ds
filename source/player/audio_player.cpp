@@ -30,43 +30,72 @@ bool AudioPlayer::init() {
     mix[1] = 1.0f;
     ndspChnSetMix(m_channel, mix);
 #endif
-    if (!m_ringBuf) {
-        m_ringBuf = (uint8_t*)malloc(m_ringCap);
-    }
     m_initialized = true;
     return true;
+}
+
+void AudioPlayer::clearChunks() {
+    size_t count = m_chunkCount.load();
+    for (size_t i = 0; i < count; i++) {
+        if (m_chunks[i]) {
+            free(m_chunks[i]);
+            m_chunks[i] = nullptr;
+        }
+    }
+    m_chunkCount = 0;
+    m_readChunkIdx = 0;
+    m_readChunkOffset = 0;
+    m_totalDownloadedBytes = 0;
 }
 
 void AudioPlayer::exit() {
     if (!m_initialized) return;
     stop();
-    if (m_ringBuf) {
-        free(m_ringBuf);
-        m_ringBuf = nullptr;
-    }
+    clearChunks();
     m_initialized = false;
 }
 
 int AudioPlayer::readStream(uint8_t* buf, int maxBytes) {
-    while (m_ringSize.load() == 0) {
-        if (m_stopRequested.load() || g_appExiting.load()) return -1;
-        if (m_downloadFinished.load()) return 0; // EOF
-#ifdef __3DS__
-        svcSleepThread(5000000); // 5ms
-#endif
-    }
-
     if (m_stopRequested.load() || g_appExiting.load()) return -1;
 
-    size_t toRead = std::min((size_t)maxBytes, m_ringSize.load());
-    size_t firstPart = std::min(toRead, m_ringCap - m_ringTail);
-    memcpy(buf, &m_ringBuf[m_ringTail], firstPart);
-    if (toRead > firstPart) {
-        memcpy(buf + firstPart, &m_ringBuf[0], toRead - firstPart);
+    while (true) {
+        if (m_stopRequested.load() || g_appExiting.load()) return -1;
+
+        size_t count = m_chunkCount.load();
+        if (m_readChunkIdx < count) {
+            AudioChunk* curChunk = m_chunks[m_readChunkIdx];
+            if (curChunk) {
+                size_t chunkSize = curChunk->size;
+                if (m_readChunkOffset < chunkSize) {
+                    size_t avail = chunkSize - m_readChunkOffset;
+                    size_t toRead = std::min((size_t)maxBytes, avail);
+                    memcpy(buf, curChunk->data + m_readChunkOffset, toRead);
+                    m_readChunkOffset += toRead;
+                    if (m_readChunkOffset >= AudioChunk::CHUNK_SIZE) {
+                        m_readChunkIdx++;
+                        m_readChunkOffset = 0;
+                    }
+                    return (int)toRead;
+                } else if (m_readChunkOffset >= AudioChunk::CHUNK_SIZE) {
+                    m_readChunkIdx++;
+                    m_readChunkOffset = 0;
+                    continue;
+                }
+            }
+        }
+
+        if (m_downloadFinished.load()) {
+            size_t finalCount = m_chunkCount.load();
+            if (m_readChunkIdx >= finalCount ||
+                (m_readChunkIdx == finalCount - 1 && m_chunks[m_readChunkIdx] && m_readChunkOffset >= m_chunks[m_readChunkIdx]->size)) {
+                return 0; // True EOF! All downloaded bytes have been consumed.
+            }
+        }
+
+#ifdef __3DS__
+        svcSleepThread(5000000); // 5ms wait for download thread
+#endif
     }
-    m_ringTail = (m_ringTail + toRead) % m_ringCap;
-    m_ringSize -= toRead;
-    return (int)toRead;
 }
 
 #ifdef __3DS__
@@ -86,29 +115,22 @@ void AudioPlayer::downloadLoop() {
     if (isLocal) {
         FILE* f = fopen(m_currentUrl.c_str(), "rb");
         if (f) {
-            if (m_initialSec.load() > 0 && m_totalSec.load() > 0) {
-                fseek(f, 0, SEEK_END);
-                long fLen = ftell(f);
-                long seekPos = (long)(((double)m_initialSec.load() / (double)m_totalSec.load()) * fLen);
-                fseek(f, seekPos, SEEK_SET);
-            }
-            uint8_t chunk[16384];
+            uint8_t tempBuf[AudioChunk::CHUNK_SIZE];
             while (!m_stopRequested.load() && !g_appExiting.load()) {
-                size_t freeSpace = m_ringCap - m_ringSize.load();
-                if (freeSpace < sizeof(chunk)) {
-                    svcSleepThread(10000000); // 10ms wait for decoder
-                    continue;
-                }
-                size_t n = fread(chunk, 1, sizeof(chunk), f);
+                size_t n = fread(tempBuf, 1, sizeof(tempBuf), f);
                 if (n == 0) break;
 
-                size_t firstPart = std::min(n, m_ringCap - m_ringHead);
-                memcpy(&m_ringBuf[m_ringHead], chunk, firstPart);
-                if (n > firstPart) {
-                    memcpy(&m_ringBuf[0], chunk + firstPart, n - firstPart);
-                }
-                m_ringHead = (m_ringHead + n) % m_ringCap;
-                m_ringSize += n;
+                size_t count = m_chunkCount.load();
+                if (count >= MAX_CHUNKS) break;
+
+                AudioChunk* chunk = (AudioChunk*)malloc(sizeof(AudioChunk));
+                if (!chunk) break;
+
+                memcpy(chunk->data, tempBuf, n);
+                chunk->size = n;
+                m_chunks[count] = chunk;
+                m_chunkCount = count + 1;
+                m_totalDownloadedBytes += n;
             }
             fclose(f);
         }
@@ -135,22 +157,37 @@ void AudioPlayer::downloadLoop() {
 
         const uint8_t* src = (const uint8_t*)ptr;
         size_t remaining = totalBytes;
+
         while (remaining > 0 && !p->m_stopRequested.load() && !g_appExiting.load()) {
-            size_t freeSpace = p->m_ringCap - p->m_ringSize.load();
-            if (freeSpace < 4096) {
-                svcSleepThread(10000000); // 10ms wait for decoder to consume
-                continue;
+            size_t count = p->m_chunkCount.load();
+            AudioChunk* curChunk = nullptr;
+
+            if (count > 0 && p->m_chunks[count - 1] && p->m_chunks[count - 1]->size < AudioChunk::CHUNK_SIZE) {
+                curChunk = p->m_chunks[count - 1];
+            } else {
+                if (count >= MAX_CHUNKS) {
+                    // Buffer reached 32 MB cap (~22 minutes of audio). Wait for decoder before fetching more.
+                    svcSleepThread(20000000); // 20ms
+                    continue;
+                }
+                curChunk = (AudioChunk*)malloc(sizeof(AudioChunk));
+                if (!curChunk) {
+                    // Memory low: sleep and retry
+                    svcSleepThread(50000000);
+                    continue;
+                }
+                curChunk->size = 0;
+                p->m_chunks[count] = curChunk;
+                p->m_chunkCount = count + 1;
             }
-            size_t toWrite = std::min(remaining, freeSpace);
-            size_t firstPart = std::min(toWrite, p->m_ringCap - p->m_ringHead);
-            memcpy(&p->m_ringBuf[p->m_ringHead], src, firstPart);
-            if (toWrite > firstPart) {
-                memcpy(&p->m_ringBuf[0], src + firstPart, toWrite - firstPart);
-            }
-            p->m_ringHead = (p->m_ringHead + toWrite) % p->m_ringCap;
-            p->m_ringSize += toWrite;
-            src += toWrite;
-            remaining -= toWrite;
+
+            size_t spaceInChunk = AudioChunk::CHUNK_SIZE - curChunk->size;
+            size_t toCopy = std::min(remaining, spaceInChunk);
+            memcpy(curChunk->data + curChunk->size, src, toCopy);
+            curChunk->size += toCopy;
+            p->m_totalDownloadedBytes += toCopy;
+            src += toCopy;
+            remaining -= toCopy;
         }
         return totalBytes;
     };
@@ -169,7 +206,7 @@ void AudioPlayer::downloadLoop() {
     curl_easy_setopt(curl, CURLOPT_XFERINFODATA, this);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 16384L);
+    curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 32768L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
 
@@ -226,7 +263,7 @@ void AudioPlayer::decodeLoop() {
     uint8_t feedChunk[16384];
 
     // Wait until we have at least 64 KB pre-buffered or download finishes
-    while (m_ringSize.load() < 64 * 1024 && !m_downloadFinished.load() && !m_stopRequested.load() && !g_appExiting.load()) {
+    while (m_totalDownloadedBytes.load() < 64 * 1024 && !m_downloadFinished.load() && !m_stopRequested.load() && !g_appExiting.load()) {
         svcSleepThread(10000000); // 10ms
     }
 
@@ -326,20 +363,13 @@ bool AudioPlayer::play(const std::string& audioUrl, int totalSec) {
     m_stopRequested = false;
     m_isPaused = false;
     m_isPlaying = true;
-    m_ringHead = 0;
-    m_ringTail = 0;
-    m_ringSize = 0;
+    m_readChunkIdx = 0;
+    m_readChunkOffset = 0;
+    m_chunkCount = 0;
+    m_totalDownloadedBytes = 0;
     m_downloadFinished = false;
 
 #ifdef __3DS__
-    if (!m_ringBuf) {
-        m_ringBuf = (uint8_t*)malloc(m_ringCap);
-        if (!m_ringBuf) {
-            m_isPlaying = false;
-            return false;
-        }
-    }
-
     m_downloadThread = threadCreate(downloadThreadEntry, this, 64 * 1024, 0x31, -2, false);
     if (!m_downloadThread) {
         m_downloadThread = threadCreate(downloadThreadEntry, this, 64 * 1024, 0x31, -1, false);
@@ -389,6 +419,7 @@ void AudioPlayer::stop() {
     }
     ndspChnReset(m_channel);
 #endif
+    clearChunks();
     m_isPlaying = false;
 }
 
