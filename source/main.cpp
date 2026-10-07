@@ -78,7 +78,6 @@ static void onAptHook(APT_HookType hook, void* param) {
     (void)param;
     switch (hook) {
         case APTHOOK_ONSUSPEND:
-        case APTHOOK_ONSLEEP:
             g_isSuspended = true;
             if (s_bottomScreenOff) {
                 s_bottomScreenOff = false;
@@ -88,9 +87,26 @@ static void onAptHook(APT_HookType hook, void* param) {
                 g_videoWasPlayingOnSuspend = true;
                 g_pVideoPlayer->pause();
             }
+            // Home button pressed: pause audio and mute only if shell is open (not closed for pocket playback)
+            if (!s_shellClosed) {
+                if (g_pAudioPlayer && g_pAudioPlayer->isPlaying() && !g_pAudioPlayer->isPaused()) {
+                    g_audioWasPlayingOnSuspend = true;
+                    g_pAudioPlayer->pause();
+                }
+                ndspSetMasterVol(0.0f);
+            }
+            break;
+
+        case APTHOOK_ONSLEEP:
+            // If actively playing music, keep playing through headphones! Do not mute or pause.
             if (g_pAudioPlayer && g_pAudioPlayer->isPlaying() && !g_pAudioPlayer->isPaused()) {
-                g_audioWasPlayingOnSuspend = true;
-                g_pAudioPlayer->pause();
+                ndspSetMasterVol(1.0f);
+                break;
+            }
+            g_isSuspended = true;
+            if (g_pVideoPlayer && g_pVideoPlayer->isPlaying() && !g_pVideoPlayer->isPaused()) {
+                g_videoWasPlayingOnSuspend = true;
+                g_pVideoPlayer->pause();
             }
             ndspSetMasterVol(0.0f);
             break;
@@ -215,6 +231,8 @@ static void playMediaItem(const PlexMediaItem& item, AudioPlayer& audioPlayer, V
 #ifdef __3DS__
         // Maintain 804MHz speedup during audio playback for stutter-free MP3/AAC decoding & TLS decryption
         osSetSpeedupEnable(true);
+        // Disallow hardware sleep so music playback continues when clamshell lid is closed
+        aptSetSleepAllowed(false);
 #endif
         audioPlayer.play(playUrl, (int)(item.durationMs / 1000));
         if (startOffsetMs > 0) {
