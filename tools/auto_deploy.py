@@ -31,6 +31,19 @@ def check_port(port):
     except:
         return False
 
+def check_netloader_broadcast():
+    """Listen for NetLoader's 1-second UDP broadcast beacon instead of connecting via TCP (which causes [namelen: 11] abort error)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.settimeout(0.4)
+        s.bind(('', 17491))
+        data, addr = s.recvfrom(256)
+        s.close()
+        return True
+    except:
+        return False
+
 def deploy_via_ftp():
     print(f"\n[+] FTPD detected on {TARGET_IP}:5000! Connecting via FTP...")
     ftp = ftplib.FTP()
@@ -70,6 +83,13 @@ def deploy_via_netloader():
     print("\n[SUCCESS] Sent to 3DS! It should be launching on your screens now.")
 
 def main():
+    if "--netloader" in sys.argv or "--direct" in sys.argv:
+        deploy_via_netloader()
+        return
+    if "--ftp" in sys.argv:
+        deploy_via_ftp()
+        return
+
     print("=" * 65)
     print(f"  TARGET 3DS: {TARGET_IP}")
     print("=" * 65)
@@ -79,13 +99,13 @@ def main():
     print("\n[*] Listening... (Press Ctrl+C to cancel)")
 
     for _ in range(300): # 150 seconds timeout
-        if check_port(17491):
+        if check_netloader_broadcast():
             deploy_via_netloader()
             return
         if check_port(5000):
             deploy_via_ftp()
             return
-        time.sleep(0.5)
+        time.sleep(0.3)
 
     print("\n[!] Timed out waiting for NetLoader or FTPD.")
 

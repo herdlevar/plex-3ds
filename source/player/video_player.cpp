@@ -6,7 +6,6 @@
 
 #include <curl/curl.h>
 #include <cstring>
-#include <iostream>
 #include <algorithm>
 
 extern "C" {

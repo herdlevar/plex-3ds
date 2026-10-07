@@ -5,7 +5,6 @@
 #include <citro3d.h>
 #endif
 
-#include <iostream>
 #include <algorithm>
 
 // Plex Color Palette

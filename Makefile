@@ -35,7 +35,7 @@ UNIQUE_ID		:= 0xEE73D
 # Options for code generation (Optimized for ARM11 MPCORE / New 3DS)
 ARCH	:= -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
 
-CFLAGS	:= -Wall -Wextra -Wno-unused -O2 -mword-relocations \
+CFLAGS	:= -Wall -Wextra -Wno-unused -Os -mword-relocations \
 		-fomit-frame-pointer -ffunction-sections -fdata-sections \
 		$(ARCH)
 
@@ -44,7 +44,7 @@ CFLAGS	+= $(INCLUDE) -DARM11 -D__3DS__ -DCURL_STATICLIB
 CXXFLAGS	:= $(CFLAGS) -fno-exceptions -std=gnu++17
 
 ASFLAGS	:= $(ARCH)
-LDFLAGS	:= -specs=3dsx.specs $(ARCH) -Wl,--gc-sections,--allow-multiple-definition,-Map,$(notdir $*.map)
+LDFLAGS	:= -specs=3dsx.specs $(ARCH) -Wl,--gc-sections,--allow-multiple-definition,-Map,Plex3DS.map
 
 LIBS	:= -lavformat -lavcodec -lswscale -lswresample -lavutil \
 		   -lmpg123 -lFLAC -logg \

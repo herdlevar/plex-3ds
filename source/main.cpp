@@ -13,9 +13,6 @@
 #include <unistd.h>
 #endif
 
-#include <iostream>
-#include <fstream>
-#include <sstream>
 #include <vector>
 #include <memory>
 #include <algorithm>
@@ -215,12 +212,20 @@ static void playMediaItem(const PlexMediaItem& item, AudioPlayer& audioPlayer, V
 
     if (item.type == MediaType::TRACK) {
         videoPlayer.stop();
+#ifdef __3DS__
+        // Audio playback uses <5% of a 268MHz ARM11 core; run at standard clock to maximize battery
+        osSetSpeedupEnable(false);
+#endif
         audioPlayer.play(playUrl, (int)(item.durationMs / 1000));
         if (startOffsetMs > 0) {
             audioPlayer.seekTo((int)(startOffsetMs / 1000));
         }
     } else {
         audioPlayer.stop();
+#ifdef __3DS__
+        // Dynamically engage 804MHz CPU clock & L2 cache on New 3DS exclusively for H.264 video decoding
+        osSetSpeedupEnable(true);
+#endif
         videoPlayer.start(playUrl, item.durationMs, startOffsetMs);
         if (!item.isOffline && !g_servers.empty() && g_selectedServerIdx >= 0) {
             const_cast<PlexAPI&>(api).reportTimeline(g_servers[g_selectedServerIdx], item, startOffsetMs, "playing");
@@ -276,6 +281,10 @@ static void stopAllPlayback(AudioPlayer& audioPlayer, VideoPlayer& videoPlayer, 
     }
     audioPlayer.stop();
     videoPlayer.stop();
+#ifdef __3DS__
+    // Return to standard 268MHz clock rate when playback stops
+    osSetSpeedupEnable(false);
+#endif
     g_hasNowPlaying = false;
     g_controlsExpanded = false;
     g_isScrubbing = false;
@@ -634,8 +643,8 @@ int main(int argc, char* argv[]) {
     (void)argv;
 
 #ifdef __3DS__
-    // Enable New 3DS 804MHz CPU Speedup & L2 Cache
-    osSetSpeedupEnable(true);
+    // Start at standard 268MHz CPU clock to conserve battery; 804MHz is engaged on demand during video
+    osSetSpeedupEnable(false);
     APT_SetAppCpuTimeLimit(80);
     gspLcdInit();
     ptmuInit();
@@ -944,6 +953,9 @@ int main(int argc, char* argv[]) {
             } else {
                 g_hasNowPlaying = false;
                 g_controlsExpanded = false;
+#ifdef __3DS__
+                osSetSpeedupEnable(false);
+#endif
             }
         }
 
