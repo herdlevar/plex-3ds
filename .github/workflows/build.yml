@@ -20,7 +20,10 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          dkp-pacman -Syu --noconfirm 3ds-curl 3ds-mpg123 3ds-flac 3ds-libogg python3
+          git config --global --add safe.directory "$GITHUB_WORKSPACE" || true
+          dkp-pacman -Sy
+          dkp-pacman -S --needed --noconfirm 3ds-curl 3ds-mpg123 3ds-flac 3ds-libogg
+          which python3 || (apt-get update && apt-get install -y python3)
 
       - name: Run Core Test Suite
         run: |
