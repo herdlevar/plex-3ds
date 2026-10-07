@@ -62,9 +62,10 @@ void AudioPlayer::streamLoop() {
         return;
     }
 
-    const size_t SAMPLES_PER_BUF = 4096;
+    const size_t NUM_BUFFERS = 4;
+    const size_t SAMPLES_PER_BUF = 8192; // ~185ms per buffer @ 44.1kHz (total ~740ms queue)
     const size_t BUF_BYTES = SAMPLES_PER_BUF * sizeof(int16_t) * 2;
-    int16_t* audioBuf = (int16_t*)linearAlloc(BUF_BYTES * 2);
+    int16_t* audioBuf = (int16_t*)linearAlloc(BUF_BYTES * NUM_BUFFERS);
     if (!audioBuf) {
         mpg123_close(mh);
         mpg123_delete(mh);
@@ -72,12 +73,12 @@ void AudioPlayer::streamLoop() {
         return;
     }
 
-    ndspWaveBuf waveBuf[2];
+    ndspWaveBuf waveBuf[NUM_BUFFERS];
     memset(waveBuf, 0, sizeof(waveBuf));
-    waveBuf[0].data_pcm16 = audioBuf;
-    waveBuf[0].status = NDSP_WBUF_DONE;
-    waveBuf[1].data_pcm16 = audioBuf + SAMPLES_PER_BUF * 2;
-    waveBuf[1].status = NDSP_WBUF_DONE;
+    for (size_t i = 0; i < NUM_BUFFERS; i++) {
+        waveBuf[i].data_pcm16 = audioBuf + (i * SAMPLES_PER_BUF * 2);
+        waveBuf[i].status = NDSP_WBUF_DONE;
+    }
 
     struct StreamContext {
         AudioPlayer* player;
@@ -110,7 +111,7 @@ void AudioPlayer::streamLoop() {
 
         while (!sc->player->m_stopRequested.load() && !g_appExiting.load()) {
             if (sc->waveBuf[sc->currentBuf].status != NDSP_WBUF_DONE) {
-                svcSleepThread(5000000); // 5ms
+                svcSleepThread(2000000); // 2ms
                 continue;
             }
 
@@ -139,7 +140,7 @@ void AudioPlayer::streamLoop() {
                 sc->waveBuf[sc->currentBuf].nsamples = numSamples;
                 DSP_FlushDataCache(sc->waveBuf[sc->currentBuf].data_pcm16, bytesDone);
                 ndspChnWaveBufAdd(sc->channel, &sc->waveBuf[sc->currentBuf]);
-                sc->currentBuf = 1 - sc->currentBuf;
+                sc->currentBuf = (sc->currentBuf + 1) % 4;
             }
 
             if (readRet == MPG123_NEED_MORE || bytesDone == 0) {
@@ -209,7 +210,15 @@ void AudioPlayer::streamLoop() {
         }
     }
 
-    while (!m_stopRequested.load() && !g_appExiting.load() && (waveBuf[0].status != NDSP_WBUF_DONE || waveBuf[1].status != NDSP_WBUF_DONE)) {
+    while (!m_stopRequested.load() && !g_appExiting.load()) {
+        bool anyBusy = false;
+        for (size_t i = 0; i < NUM_BUFFERS; i++) {
+            if (waveBuf[i].status != NDSP_WBUF_DONE) {
+                anyBusy = true;
+                break;
+            }
+        }
+        if (!anyBusy) break;
         svcSleepThread(10000000); // 10ms
     }
 
@@ -232,7 +241,10 @@ bool AudioPlayer::play(const std::string& audioUrl, int totalSec) {
     m_isPlaying = true;
 
 #ifdef __3DS__
-    m_thread = threadCreate(streamThreadEntry, this, 64 * 1024, 0x30, -2, false);
+    m_thread = threadCreate(streamThreadEntry, this, 64 * 1024, 0x2A, -1, false);
+    if (!m_thread) {
+        m_thread = threadCreate(streamThreadEntry, this, 64 * 1024, 0x2A, -2, false);
+    }
     if (!m_thread) {
         m_isPlaying = false;
         return false;
@@ -316,7 +328,10 @@ void AudioPlayer::seekTo(int targetSeconds) {
     m_isPlaying = true;
 
 #ifdef __3DS__
-    m_thread = threadCreate(streamThreadEntry, this, 64 * 1024, 0x30, -2, false);
+    m_thread = threadCreate(streamThreadEntry, this, 64 * 1024, 0x2A, -1, false);
+    if (!m_thread) {
+        m_thread = threadCreate(streamThreadEntry, this, 64 * 1024, 0x2A, -2, false);
+    }
     if (!m_thread) {
         m_isPlaying = false;
     }

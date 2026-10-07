@@ -11,7 +11,7 @@
 namespace Network {
 
 static uint32_t* socBuffer = nullptr;
-static const size_t SOC_BUFFERSIZE = 0x40000; // 256KB linear memory for sockets (reduces runtime RAM footprint)
+static const size_t SOC_BUFFERSIZE = 0x80000; // 512KB linear memory for smooth network streaming
 static bool s_networkInitialized = false;
 
 static size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {

@@ -213,8 +213,8 @@ static void playMediaItem(const PlexMediaItem& item, AudioPlayer& audioPlayer, V
     if (item.type == MediaType::TRACK) {
         videoPlayer.stop();
 #ifdef __3DS__
-        // Audio playback uses <5% of a 268MHz ARM11 core; run at standard clock to maximize battery
-        osSetSpeedupEnable(false);
+        // Maintain 804MHz speedup during audio playback for stutter-free MP3/AAC decoding & TLS decryption
+        osSetSpeedupEnable(true);
 #endif
         audioPlayer.play(playUrl, (int)(item.durationMs / 1000));
         if (startOffsetMs > 0) {
