@@ -58,6 +58,7 @@ static DownloadManager g_downloadManager;
 
 std::atomic<bool> g_appExiting{false};
 std::atomic<bool> g_isSuspended{false};
+std::atomic<bool> g_gpuRightLost{false};
 
 #ifdef __3DS__
 static aptHookCookie g_aptCookie;
@@ -77,17 +78,9 @@ static VideoPlayer* g_pVideoPlayer = nullptr;
 static void onAptHook(APT_HookType hook, void* param) {
     (void)param;
     switch (hook) {
-        case APTHOOK_ONSUSPEND: {
-            u8 shellState = 1;
-            PTMU_GetShellState(&shellState);
-            bool isClosed = (shellState == 0) || s_shellClosed;
-            if (isClosed && g_pAudioPlayer && g_pAudioPlayer->isPlaying() && !g_pAudioPlayer->isPaused()) {
-                // Clamshell closed during music playback: keep playing through headphones!
-                ndspSetMasterVol(1.0f);
-                break;
-            }
+        case APTHOOK_ONSUSPEND:
+            g_gpuRightLost = true;
             g_isSuspended = true;
-            aptSetSleepAllowed(true);
             if (s_bottomScreenOff) {
                 s_bottomScreenOff = false;
                 GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_BOTTOM);
@@ -100,9 +93,7 @@ static void onAptHook(APT_HookType hook, void* param) {
                 g_audioWasPlayingOnSuspend = true;
                 g_pAudioPlayer->pause();
             }
-            ndspSetMasterVol(0.0f);
             break;
-        }
 
         case APTHOOK_ONSLEEP:
             // If actively playing music, keep playing through headphones! Do not mute or pause.
@@ -110,6 +101,7 @@ static void onAptHook(APT_HookType hook, void* param) {
                 ndspSetMasterVol(1.0f);
                 break;
             }
+            g_gpuRightLost = true;
             g_isSuspended = true;
             if (g_pVideoPlayer && g_pVideoPlayer->isPlaying() && !g_pVideoPlayer->isPaused()) {
                 g_videoWasPlayingOnSuspend = true;
@@ -119,11 +111,11 @@ static void onAptHook(APT_HookType hook, void* param) {
                 g_audioWasPlayingOnSuspend = true;
                 g_pAudioPlayer->pause();
             }
-            ndspSetMasterVol(0.0f);
             break;
 
         case APTHOOK_ONRESTORE:
         case APTHOOK_ONWAKEUP:
+            g_gpuRightLost = false;
             ndspSetMasterVol(1.0f);
             if (g_videoWasPlayingOnSuspend && g_pVideoPlayer) {
                 g_pVideoPlayer->resume();
@@ -141,6 +133,7 @@ static void onAptHook(APT_HookType hook, void* param) {
 
         case APTHOOK_ONEXIT:
             g_appExiting = true;
+            g_gpuRightLost = true;
             if (s_bottomScreenOff) {
                 s_bottomScreenOff = false;
                 GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_BOTTOM);
@@ -155,6 +148,7 @@ static void onAptHook(APT_HookType hook, void* param) {
     }
 }
 #endif
+
 
 static void ensureOfflineLibrary() {
     for (const auto& lib : g_libraries) {
@@ -800,6 +794,7 @@ int main(int argc, char* argv[]) {
     g_pVideoPlayer = &videoPlayer;
 #ifdef __3DS__
     aptHook(&g_aptCookie, onAptHook, nullptr);
+    aptSetHomeAllowed(true);
 #endif
 
     g_downloadManager.init();
@@ -845,8 +840,8 @@ int main(int argc, char* argv[]) {
         if (g_appExiting.load()) {
             break;
         }
-        if (g_isSuspended.load()) {
-            svcSleepThread(50000000);
+        if (g_isSuspended.load() || g_gpuRightLost.load()) {
+            svcSleepThread(20000000);
             continue;
         }
 

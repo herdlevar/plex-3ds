@@ -62,6 +62,19 @@ int AudioPlayer::readStream(uint8_t* buf, int maxBytes) {
     while (true) {
         if (m_stopRequested.load() || g_appExiting.load()) return -1;
 
+        if (m_isPaused.load() || g_isSuspended.load()) {
+            m_decodePaused = true;
+            while ((m_isPaused.load() || g_isSuspended.load()) && !m_stopRequested.load() && !g_appExiting.load()) {
+#ifdef __3DS__
+                svcSleepThread(20000000); // 20ms
+#else
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+#endif
+            }
+            m_decodePaused = false;
+            if (m_stopRequested.load() || g_appExiting.load()) return -1;
+        }
+
         {
             std::lock_guard<std::mutex> lock(m_chunkMutex);
             size_t count = m_chunkCount.load();
@@ -305,26 +318,14 @@ void AudioPlayer::decodeLoop() {
         if (m_isPaused.load() || g_isSuspended.load()) {
             m_decodePaused = true;
             while ((m_isPaused.load() || g_isSuspended.load()) && !m_stopRequested.load() && !g_appExiting.load()) {
+#ifdef __3DS__
                 svcSleepThread(20000000); // 20ms
+#else
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+#endif
             }
             m_decodePaused = false;
             if (m_stopRequested.load() || g_appExiting.load()) break;
-
-            if (formatSet) {
-                ndspChnInitParams(m_channel);
-                ndspChnSetRate(m_channel, (float)m_sampleRate.load());
-                ndspChnSetFormat(m_channel, (m_channels.load() == 2) ? NDSP_FORMAT_STEREO_PCM16 : NDSP_FORMAT_MONO_PCM16);
-                ndspChnSetInterp(m_channel, NDSP_INTERP_LINEAR);
-                float mix[12];
-                memset(mix, 0, sizeof(mix));
-                mix[0] = 1.0f;
-                mix[1] = 1.0f;
-                ndspChnSetMix(m_channel, mix);
-                ndspChnSetPaused(m_channel, false);
-            }
-            for (size_t i = 0; i < NUM_BUFFERS; i++) {
-                waveBuf[i].status = NDSP_WBUF_DONE;
-            }
         }
 
         // Ensure next waveBuf is available
@@ -425,9 +426,9 @@ bool AudioPlayer::play(const std::string& audioUrl, int totalSec) {
     m_downloadFinished = false;
 
 #ifdef __3DS__
-    m_downloadThread = threadCreate(downloadThreadEntry, this, 128 * 1024, 0x31, -2, false);
+    m_downloadThread = threadCreate(downloadThreadEntry, this, 128 * 1024, 0x32, -1, false);
     if (!m_downloadThread) {
-        m_downloadThread = threadCreate(downloadThreadEntry, this, 128 * 1024, 0x31, -1, false);
+        m_downloadThread = threadCreate(downloadThreadEntry, this, 128 * 1024, 0x32, -2, false);
     }
 
     m_decodeThread = threadCreate(decodeThreadEntry, this, 128 * 1024, 0x2A, -1, false);
@@ -446,26 +447,15 @@ bool AudioPlayer::play(const std::string& audioUrl, int totalSec) {
 void AudioPlayer::pause() {
     m_isPaused = true;
 #ifdef __3DS__
-    ndspChnSetPaused(m_channel, true);
-    for (int i = 0; i < 10 && !m_decodePaused.load(); ++i) {
-        svcSleepThread(10000000); // 10ms
+    if (m_initialized) {
+        ndspChnSetPaused(m_channel, true);
     }
-    ndspChnReset(m_channel);
 #endif
 }
 
 void AudioPlayer::resume() {
 #ifdef __3DS__
     if (m_initialized) {
-        ndspChnInitParams(m_channel);
-        ndspChnSetRate(m_channel, (float)m_sampleRate.load());
-        ndspChnSetFormat(m_channel, (m_channels.load() == 2) ? NDSP_FORMAT_STEREO_PCM16 : NDSP_FORMAT_MONO_PCM16);
-        ndspChnSetInterp(m_channel, NDSP_INTERP_LINEAR);
-        float mix[12];
-        memset(mix, 0, sizeof(mix));
-        mix[0] = 1.0f;
-        mix[1] = 1.0f;
-        ndspChnSetMix(m_channel, mix);
         ndspChnSetPaused(m_channel, false);
     }
 #endif

@@ -643,6 +643,16 @@ void VideoPlayer::decodeLoop() {
 int VideoPlayer::readStream(uint8_t* buf, int bufSize) {
     while (m_ringSize.load() < (size_t)bufSize) {
         if (m_stopRequested.load() || g_appExiting.load()) return -1;
+        if (m_isPaused.load() || g_isSuspended.load()) {
+            while ((m_isPaused.load() || g_isSuspended.load()) && !m_stopRequested.load() && !g_appExiting.load()) {
+#ifdef __3DS__
+                svcSleepThread(20000000); // 20ms
+#else
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+#endif
+            }
+            if (m_stopRequested.load() || g_appExiting.load()) return -1;
+        }
         if (m_downloadFinished.load()) {
             size_t available = m_ringSize.load();
             if (available == 0) return 0; // EOF
@@ -724,10 +734,10 @@ bool VideoPlayer::start(const std::string& streamUrl, int64_t durationMs, int64_
             }
         }
 
-        // Spawn download thread (priority 0x31)
-        m_downloadThread = threadCreate(downloadThreadEntry, this, 128 * 1024, 0x31, -2, false);
+        // Spawn download thread (priority 0x32)
+        m_downloadThread = threadCreate(downloadThreadEntry, this, 128 * 1024, 0x32, -1, false);
         if (!m_downloadThread) {
-            m_downloadThread = threadCreate(downloadThreadEntry, this, 128 * 1024, 0x31, -1, false);
+            m_downloadThread = threadCreate(downloadThreadEntry, this, 128 * 1024, 0x32, -2, false);
         }
         if (!m_downloadThread) {
             m_isPlaying = false;
@@ -758,15 +768,17 @@ void VideoPlayer::update() {
 void VideoPlayer::pause() {
     m_isPaused = true;
 #ifdef __3DS__
-    ndspChnSetPaused(m_audioChannel, true);
-    ndspChnReset(m_audioChannel);
+    if (m_initialized) {
+        ndspChnSetPaused(m_audioChannel, true);
+    }
 #endif
 }
 
 void VideoPlayer::resume() {
 #ifdef __3DS__
-    ndspChnInitParams(m_audioChannel);
-    ndspChnSetPaused(m_audioChannel, false);
+    if (m_initialized) {
+        ndspChnSetPaused(m_audioChannel, false);
+    }
 #endif
     m_isPaused = false;
 }
