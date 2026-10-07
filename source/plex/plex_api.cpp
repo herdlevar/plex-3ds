@@ -1,9 +1,6 @@
 #include "plex_api.hpp"
 #include "network/http.hpp"
 #include "cJSON.h"
-#include <sstream>
-#include <iostream>
-#include <iomanip>
 #include <cstring>
 #include <ctime>
 
@@ -388,37 +385,39 @@ bool PlexAPI::getLibraries(const PlexServer& server, std::vector<PlexLibrary>& o
 }
 
 static std::string urlEncode(const std::string& value) {
-    std::ostringstream escaped;
-    escaped.fill('0');
-    escaped << std::hex << std::uppercase;
+    std::string escaped;
+    escaped.reserve(value.size() * 3);
+    static const char hexChars[] = "0123456789ABCDEF";
     for (char c : value) {
         if (isalnum((unsigned char)c) || c == '-' || c == '_' || c == '.' || c == '~') {
-            escaped << c;
+            escaped += c;
         } else {
-            escaped << '%' << std::setw(2) << ((int)(unsigned char)c);
+            escaped += '%';
+            escaped += hexChars[((unsigned char)c >> 4) & 0x0F];
+            escaped += hexChars[(unsigned char)c & 0x0F];
         }
     }
-    return escaped.str();
+    return escaped;
 }
 
 bool PlexAPI::getItems(const PlexServer& server, const std::string& keyOrSection, std::vector<PlexMediaItem>& outItems, int start, int size) {
     if (server.selectedUri.empty()) return false;
 
-    std::stringstream ss;
+    std::string url;
     if (!keyOrSection.empty() && keyOrSection[0] == '/') {
-        ss << server.selectedUri << keyOrSection;
+        url = server.selectedUri + keyOrSection;
         if (keyOrSection.find('?') != std::string::npos) {
-            ss << "&X-Plex-Container-Start=" << start << "&X-Plex-Container-Size=" << size;
+            url += "&X-Plex-Container-Start=" + std::to_string(start) + "&X-Plex-Container-Size=" + std::to_string(size);
         } else {
-            ss << "?X-Plex-Container-Start=" << start << "&X-Plex-Container-Size=" << size;
+            url += "?X-Plex-Container-Start=" + std::to_string(start) + "&X-Plex-Container-Size=" + std::to_string(size);
         }
     } else {
-        ss << server.selectedUri << "/library/sections/" << keyOrSection << "/all"
-           << "?X-Plex-Container-Start=" << start
-           << "&X-Plex-Container-Size=" << size;
+        url = server.selectedUri + "/library/sections/" + keyOrSection + "/all"
+            + "?X-Plex-Container-Start=" + std::to_string(start)
+            + "&X-Plex-Container-Size=" + std::to_string(size);
     }
 
-    auto resp = Network::get(ss.str(), getBaseHeaders(server.accessToken));
+    auto resp = Network::get(url, getBaseHeaders(server.accessToken));
     if (!resp.success) return false;
 
     cJSON* root = cJSON_Parse(resp.body.c_str());
@@ -539,15 +538,10 @@ bool PlexAPI::getItems(const PlexServer& server, const std::string& keyOrSection
 
 std::string PlexAPI::buildPosterUrl(const PlexServer& server, const std::string& thumbPath, int width, int height) const {
     if (thumbPath.empty() || server.selectedUri.empty()) return "";
-    std::stringstream ss;
-    ss << server.selectedUri << "/photo/:/transcode"
-       << "?width=" << width
-       << "&height=" << height
-       << "&minSize=1"
-       << "&upscale=0"
-       << "&url=" << thumbPath
-       << "&X-Plex-Token=" << server.accessToken;
-    return ss.str();
+    return server.selectedUri + "/photo/:/transcode?width=" + std::to_string(width)
+        + "&height=" + std::to_string(height)
+        + "&minSize=1&upscale=0&url=" + thumbPath
+        + "&X-Plex-Token=" + server.accessToken;
 }
 
 std::string PlexAPI::buildTranscodeUrl(const PlexServer& server, const PlexMediaItem& item, const AppConfig& config) const {
@@ -570,31 +564,29 @@ std::string PlexAPI::buildTranscodeUrl(const PlexServer& server, const PlexMedia
         std::string profileExtra = "add-transcode-target(type=musicProfile&context=streaming&protocol=http&container=mp3&audioCodec=mp3)";
         std::string profileExtraEncoded = "add-transcode-target(type%3DmusicProfile%26context%3Dstreaming%26protocol%3Dhttp%26container%3Dmp3%26audioCodec%3Dmp3)";
 
-        std::stringstream dec;
-        dec << server.selectedUri << "/music/:/transcode/universal/decision"
-            << "?path=" << encodedKey
-            << "&mediaIndex=0&partIndex=0&protocol=http&fastSeek=1&directPlay=0&directStream=0&audioQuality=60"
-            << "&location=lan&session=" << sessionId
-            << "&X-Plex-Token=" << server.accessToken
-            << "&X-Plex-Client-Identifier=Plex3DS-Client-001"
-            << "&X-Plex-Client-Profile-Name=Generic"
-            << "&X-Plex-Client-Profile-Extra=" << profileExtraEncoded;
+        std::string dec = server.selectedUri + "/music/:/transcode/universal/decision"
+            + "?path=" + encodedKey
+            + "&mediaIndex=0&partIndex=0&protocol=http&fastSeek=1&directPlay=0&directStream=0&audioQuality=60"
+            + "&location=lan&session=" + sessionId
+            + "&X-Plex-Token=" + server.accessToken
+            + "&X-Plex-Client-Identifier=Plex3DS-Client-001"
+            + "&X-Plex-Client-Profile-Name=Generic"
+            + "&X-Plex-Client-Profile-Extra=" + profileExtraEncoded;
 
         auto decHeaders = getBaseHeaders(server.accessToken);
         decHeaders["X-Plex-Client-Profile-Name"] = "Generic";
         decHeaders["X-Plex-Client-Profile-Extra"] = profileExtra;
-        Network::get(dec.str(), decHeaders);
+        Network::get(dec, decHeaders);
 
-        std::stringstream ss;
-        ss << server.selectedUri << "/music/:/transcode/universal/start.mp3"
-           << "?path=" << encodedKey
-           << "&mediaIndex=0&partIndex=0&protocol=http&fastSeek=1&directPlay=0&directStream=0&audioQuality=60"
-           << "&location=lan&session=" << sessionId
-           << "&X-Plex-Token=" << server.accessToken
-           << "&X-Plex-Client-Identifier=Plex3DS-Client-001"
-           << "&X-Plex-Client-Profile-Name=Generic"
-           << "&X-Plex-Client-Profile-Extra=" << profileExtraEncoded;
-        return ss.str();
+        std::string streamUrl = server.selectedUri + "/music/:/transcode/universal/start.mp3"
+            + "?path=" + encodedKey
+            + "&mediaIndex=0&partIndex=0&protocol=http&fastSeek=1&directPlay=0&directStream=0&audioQuality=60"
+            + "&location=lan&session=" + sessionId
+            + "&X-Plex-Token=" + server.accessToken
+            + "&X-Plex-Client-Identifier=Plex3DS-Client-001"
+            + "&X-Plex-Client-Profile-Name=Generic"
+            + "&X-Plex-Client-Profile-Extra=" + profileExtraEncoded;
+        return streamUrl;
     }
 
     uint64_t sessionTime = 0;
@@ -614,60 +606,56 @@ std::string PlexAPI::buildTranscodeUrl(const PlexServer& server, const PlexMedia
     }
 
     // Video Transcode Decision
-    std::stringstream dec;
-    dec << server.selectedUri << "/video/:/transcode/universal/decision"
-        << "?path=" << encodedKey
-        << "&mediaIndex=0&partIndex=0&protocol=http&fastSeek=1&directPlay=0&directStream=0"
-        << "&videoQuality=60"
-        << "&videoBitrate=1000"
-        << "&videoResolution=400x240"
-        << "&videoCodec=h264&audioCodec=aac"
-        << "&location=lan"
-        << "&session=" << sessionId
-        << "&" << subParam
-        << "&X-Plex-Token=" << server.accessToken
-        << "&X-Plex-Client-Identifier=Plex3DS-Client-001"
-        << "&X-Plex-Client-Profile-Name=Generic"
-        << "&X-Plex-Client-Profile-Extra=add-transcode-target(type%3DvideoProfile%26context%3Dstreaming%26protocol%3Dhttp%26container%3Dmkv%26videoCodec%3Dh264%26audioCodec%3Daac)";
+    std::string dec = server.selectedUri + "/video/:/transcode/universal/decision"
+        + "?path=" + encodedKey
+        + "&mediaIndex=0&partIndex=0&protocol=http&fastSeek=1&directPlay=0&directStream=0"
+        + "&videoQuality=60"
+        + "&videoBitrate=1000"
+        + "&videoResolution=400x240"
+        + "&videoCodec=h264&audioCodec=aac"
+        + "&location=lan"
+        + "&session=" + sessionId
+        + "&" + subParam
+        + "&X-Plex-Token=" + server.accessToken
+        + "&X-Plex-Client-Identifier=Plex3DS-Client-001"
+        + "&X-Plex-Client-Profile-Name=Generic"
+        + "&X-Plex-Client-Profile-Extra=add-transcode-target(type%3DvideoProfile%26context%3Dstreaming%26protocol%3Dhttp%26container%3Dmkv%26videoCodec%3Dh264%26audioCodec%3Daac)";
 
     auto decHeaders = getBaseHeaders(server.accessToken);
     decHeaders["X-Plex-Client-Profile-Name"] = "Generic";
     decHeaders["X-Plex-Client-Profile-Extra"] = "add-transcode-target(type=videoProfile&context=streaming&protocol=http&container=mkv&videoCodec=h264&audioCodec=aac)";
-    Network::get(dec.str(), decHeaders);
+    Network::get(dec, decHeaders);
 
     // Return the Matroska MKV stream URL with full profile augmentation
-    std::stringstream ss;
-    ss << server.selectedUri << "/video/:/transcode/universal/start.mkv"
-       << "?path=" << encodedKey
-       << "&mediaIndex=0&partIndex=0&protocol=http&fastSeek=1&directPlay=0&directStream=0"
-       << "&videoQuality=60"
-       << "&videoBitrate=1000"
-       << "&videoResolution=400x240"
-       << "&videoCodec=h264&audioCodec=aac"
-       << "&location=lan"
-       << "&session=" << sessionId
-       << "&" << subParam
-       << "&X-Plex-Token=" << server.accessToken
-       << "&X-Plex-Client-Identifier=Plex3DS-Client-001"
-       << "&X-Plex-Client-Profile-Name=Generic"
-       << "&X-Plex-Client-Profile-Extra=add-transcode-target(type%3DvideoProfile%26context%3Dstreaming%26protocol%3Dhttp%26container%3Dmkv%26videoCodec%3Dh264%26audioCodec%3Daac)";
+    std::string streamUrl = server.selectedUri + "/video/:/transcode/universal/start.mkv"
+        + "?path=" + encodedKey
+        + "&mediaIndex=0&partIndex=0&protocol=http&fastSeek=1&directPlay=0&directStream=0"
+        + "&videoQuality=60"
+        + "&videoBitrate=1000"
+        + "&videoResolution=400x240"
+        + "&videoCodec=h264&audioCodec=aac"
+        + "&location=lan"
+        + "&session=" + sessionId
+        + "&" + subParam
+        + "&X-Plex-Token=" + server.accessToken
+        + "&X-Plex-Client-Identifier=Plex3DS-Client-001"
+        + "&X-Plex-Client-Profile-Name=Generic"
+        + "&X-Plex-Client-Profile-Extra=add-transcode-target(type%3DvideoProfile%26context%3Dstreaming%26protocol%3Dhttp%26container%3Dmkv%26videoCodec%3Dh264%26audioCodec%3Daac)";
 
-    return ss.str();
+    return streamUrl;
 }
 
 void PlexAPI::reportTimeline(const PlexServer& server, const PlexMediaItem& item, int64_t timeMs, const std::string& state) {
     if (server.selectedUri.empty() || item.ratingKey.empty() || item.isOffline) return;
 
-    std::stringstream ss;
-    ss << server.selectedUri << "/:/timeline"
-       << "?ratingKey=" << item.ratingKey
-       << "&key=" << urlEncode(item.key.empty() ? ("/library/metadata/" + item.ratingKey) : item.key)
-       << "&state=" << state
-       << "&time=" << timeMs
-       << "&duration=" << item.durationMs
-       << "&X-Plex-Token=" << server.accessToken
-       << "&X-Plex-Client-Identifier=" << m_clientIdentifier;
+    std::string url = server.selectedUri + "/:/timeline?ratingKey=" + item.ratingKey
+        + "&key=" + urlEncode(item.key.empty() ? ("/library/metadata/" + item.ratingKey) : item.key)
+        + "&state=" + state
+        + "&time=" + std::to_string(timeMs)
+        + "&duration=" + std::to_string(item.durationMs)
+        + "&X-Plex-Token=" + server.accessToken
+        + "&X-Plex-Client-Identifier=" + m_clientIdentifier;
 
     auto headers = getBaseHeaders(server.accessToken);
-    Network::get(ss.str(), headers);
+    Network::get(url, headers);
 }

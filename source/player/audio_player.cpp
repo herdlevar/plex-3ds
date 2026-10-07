@@ -7,7 +7,6 @@
 #include <mpg123.h>
 #include <curl/curl.h>
 #include <cstring>
-#include <iostream>
 
 AudioPlayer::AudioPlayer() {}
 

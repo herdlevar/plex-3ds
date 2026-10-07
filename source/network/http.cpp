@@ -7,12 +7,11 @@
 
 #include <curl/curl.h>
 #include <malloc.h>
-#include <iostream>
 
 namespace Network {
 
 static uint32_t* socBuffer = nullptr;
-static const size_t SOC_BUFFERSIZE = 0x100000; // 1MB linear memory for sockets
+static const size_t SOC_BUFFERSIZE = 0x40000; // 256KB linear memory for sockets (reduces runtime RAM footprint)
 static bool s_networkInitialized = false;
 
 static size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {

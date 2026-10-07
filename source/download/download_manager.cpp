@@ -12,8 +12,6 @@
 #include <unistd.h>
 #include <cstdio>
 #include <cstring>
-#include <iostream>
-#include <sstream>
 
 static const std::string BASE_DOWNLOAD_DIR = "sdmc:/3ds/plex-3ds/downloads";
 static const std::string VIDEO_DOWNLOAD_DIR = "sdmc:/3ds/plex-3ds/downloads/videos";
