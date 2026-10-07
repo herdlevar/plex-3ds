@@ -60,11 +60,16 @@ bool DownloadManager::isDownloaded(const std::string& ratingKey) const {
     std::string safeKey = sanitizeKey(ratingKey);
     std::string metaPath = META_DOWNLOAD_DIR + "/" + safeKey + ".json";
     FILE* f = fopen(metaPath.c_str(), "rb");
-    if (f) {
-        fclose(f);
-        return true;
+    if (!f) return false;
+    fclose(f);
+
+    std::string lp = getLocalFilePath(ratingKey);
+    if (lp.empty()) return false;
+    struct stat st;
+    if (stat(lp.c_str(), &st) != 0 || st.st_size < 4096) {
+        return false;
     }
-    return false;
+    return true;
 }
 
 std::string DownloadManager::getLocalFilePath(const std::string& ratingKey) const {
@@ -324,7 +329,7 @@ void DownloadManager::downloadLoop() {
         std::string ext = (current.item.type == MediaType::TRACK) ? ".mp3" : ".mkv";
         std::string folder = (current.item.type == MediaType::TRACK) ? MUSIC_DOWNLOAD_DIR : VIDEO_DOWNLOAD_DIR;
         std::string finalPath = folder + "/" + safeKey + ext;
-        std::string tempPath = BASE_DOWNLOAD_DIR + "/temp_" + safeKey + ext;
+        std::string tempPath = folder + "/.temp_" + safeKey + ext;
 
         FILE* outFile = fopen(tempPath.c_str(), "wb");
         if (!outFile) {
@@ -356,12 +361,17 @@ void DownloadManager::downloadLoop() {
                 svcSleepThread(50000000); // 50ms pause during Home Menu
             }
             if (dc->mgr->m_cancelRequested.load() || g_appExiting.load()) return 0;
-            return fwrite(ptr, size, nmemb, dc->fp);
+            return fwrite(ptr, 1, size * nmemb, dc->fp);
         };
 
         auto xferInfoCb = [](void* clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) -> int {
             (void)ultotal; (void)ulnow;
             DownloadManager* mgr = (DownloadManager*)clientp;
+            if (mgr->m_cancelRequested.load() || g_appExiting.load()) return 1;
+
+            while (g_isSuspended.load() && !mgr->m_cancelRequested.load() && !g_appExiting.load()) {
+                svcSleepThread(50000000); // 50ms pause during Home Menu
+            }
             if (mgr->m_cancelRequested.load() || g_appExiting.load()) return 1;
 
             std::lock_guard<std::mutex> lock(mgr->m_progressMutex);
@@ -390,6 +400,14 @@ void DownloadManager::downloadLoop() {
                         estTotal = (mgr->m_currentItem.durationMs / 1000) * 141000; // ~1128kbps Video
                     }
                 }
+                if (estTotal <= 0) {
+                    // Safe fallbacks for missing duration metadata
+                    if (mgr->m_currentItem.type == MediaType::TRACK) {
+                        estTotal = 4 * 1024 * 1024; // ~4 MB for typical song
+                    } else {
+                        estTotal = 150 * 1024 * 1024; // ~150 MB for typical episode
+                    }
+                }
                 if (estTotal > 0 && dlnow > 0) {
                     mgr->m_progress.percent = std::clamp((int)((dlnow * 100) / estTotal), 0, 99);
                 } else {
@@ -414,11 +432,11 @@ void DownloadManager::downloadLoop() {
         curl_easy_setopt(curl, CURLOPT_XFERINFODATA, this);
         curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-        curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 65536L);
+        curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 32768L);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
         curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 512L);
-        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 30L);
+        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 60L);
 
         static const char* CA_BUNDLE_PATH = "sdmc:/3ds/plex-3ds/cacert.pem";
         FILE* caF = fopen(CA_BUNDLE_PATH, "rb");
@@ -444,7 +462,6 @@ void DownloadManager::downloadLoop() {
             headers = curl_slist_append(headers, "X-Plex-Client-Profile-Extra: add-transcode-target(type=videoProfile&context=streaming&protocol=http&container=mkv&videoCodec=h264&audioCodec=aac)");
         }
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-        curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
 
         {
             std::lock_guard<std::mutex> lock(m_progressMutex);
@@ -556,9 +573,9 @@ int DownloadManager::queueDownloads(const std::vector<std::pair<PlexMediaItem, s
             threadFree(m_thread);
             m_thread = nullptr;
         }
-        m_thread = threadCreate(downloadThreadEntry, this, 128 * 1024, 0x31, -2, false);
+        m_thread = threadCreate(downloadThreadEntry, this, 128 * 1024, 0x33, -1, false);
         if (!m_thread) {
-            m_thread = threadCreate(downloadThreadEntry, this, 128 * 1024, 0x31, -1, false);
+            m_thread = threadCreate(downloadThreadEntry, this, 128 * 1024, 0x33, -2, false);
         }
         if (!m_thread) {
             m_isDownloading = false;

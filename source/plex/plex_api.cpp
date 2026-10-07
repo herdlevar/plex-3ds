@@ -3,6 +3,8 @@
 #include "cJSON.h"
 #include <cstring>
 #include <ctime>
+#include <algorithm>
+#include <cctype>
 
 #ifdef __3DS__
 #include <3ds.h>
@@ -526,8 +528,9 @@ bool PlexAPI::getItems(const PlexServer& server, const std::string& keyOrSection
                 }
             }
 
-            if (dur && cJSON_IsNumber(dur)) {
-                item.durationMs = (int64_t)dur->valuedouble;
+            if (dur) {
+                if (cJSON_IsNumber(dur)) item.durationMs = (int64_t)dur->valuedouble;
+                else if (dur->valuestring) item.durationMs = atoll(dur->valuestring);
                 item.duration = std::to_string(item.durationMs);
             }
 
@@ -555,8 +558,12 @@ std::string PlexAPI::buildTranscodeUrl(const PlexServer& server, const PlexMedia
     std::string clientId = m_clientIdentifier.empty() ? "Plex3DS-Client-001" : m_clientIdentifier;
 
     if (item.type == MediaType::TRACK) {
-        bool isMp3 = (item.container == "mp3" ||
-                     (item.partKey.length() >= 4 && item.partKey.substr(item.partKey.length() - 4) == ".mp3"));
+        std::string contLower = item.container;
+        std::transform(contLower.begin(), contLower.end(), contLower.begin(), ::tolower);
+        std::string pkLower = item.partKey;
+        std::transform(pkLower.begin(), pkLower.end(), pkLower.begin(), ::tolower);
+        bool isMp3 = (contLower == "mp3" || contLower == "audio/mp3" || contLower == "mpeg" ||
+                     (pkLower.length() >= 4 && pkLower.substr(pkLower.length() - 4) == ".mp3"));
         if (!item.partKey.empty() && isMp3) {
             return server.selectedUri + item.partKey + "?X-Plex-Token=" + server.accessToken;
         }
