@@ -593,7 +593,10 @@ std::string PlexAPI::buildTranscodeUrl(const PlexServer& server, const PlexMedia
         auto decHeaders = getBaseHeaders(server.accessToken);
         decHeaders["X-Plex-Client-Profile-Name"] = "Generic";
         decHeaders["X-Plex-Client-Profile-Extra"] = profileExtra;
-        Network::get(dec, decHeaders);
+        Network::HttpResponse decRes = Network::get(dec, decHeaders);
+        if (!decRes.success || decRes.statusCode >= 400) {
+            return "";
+        }
 
         std::string streamUrl = server.selectedUri + "/music/:/transcode/universal/start.mp3"
             + "?path=" + encodedKey
@@ -641,7 +644,10 @@ std::string PlexAPI::buildTranscodeUrl(const PlexServer& server, const PlexMedia
     auto decHeaders = getBaseHeaders(server.accessToken);
     decHeaders["X-Plex-Client-Profile-Name"] = "Generic";
     decHeaders["X-Plex-Client-Profile-Extra"] = "add-transcode-target(type=videoProfile&context=streaming&protocol=http&container=mkv&videoCodec=h264&audioCodec=aac)";
-    Network::get(dec, decHeaders);
+    Network::HttpResponse decRes = Network::get(dec, decHeaders);
+    if (!decRes.success || decRes.statusCode >= 400) {
+        return "";
+    }
 
     // Return the Matroska MKV stream URL with full profile augmentation
     std::string streamUrl = server.selectedUri + "/video/:/transcode/universal/start.mkv"

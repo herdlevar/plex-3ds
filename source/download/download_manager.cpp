@@ -1,4 +1,5 @@
 #include "download/download_manager.hpp"
+#include "plex/plex_api.hpp"
 #include "cJSON.h"
 
 #ifdef __3DS__
@@ -88,6 +89,25 @@ static bool isSafeDownloadDir(const std::string& d) {
         return false;
     }
     return true;
+}
+
+static void removeFileAndPruneEmptyDirs(const std::string& path) {
+    if (path.empty()) return;
+    remove(path.c_str());
+    size_t lastSlash = path.rfind('/');
+    if (lastSlash != std::string::npos) {
+        std::string parentDir = path.substr(0, lastSlash);
+        if (isSafeDownloadDir(parentDir)) {
+            rmdir(parentDir.c_str());
+            size_t prevSlash = parentDir.rfind('/');
+            if (prevSlash != std::string::npos) {
+                std::string gpDir = parentDir.substr(0, prevSlash);
+                if (isSafeDownloadDir(gpDir)) {
+                    rmdir(gpDir.c_str());
+                }
+            }
+        }
+    }
 }
 
 static void createDirectories(const std::string& dirPath) {
@@ -470,22 +490,7 @@ bool DownloadManager::deleteDownload(const std::string& ratingKey) {
     std::string localPath = getLocalFilePath(ratingKey);
 
     if (!localPath.empty() && isSafeDownloadPath(localPath)) {
-        remove(localPath.c_str());
-        // Clean up empty parent folder (e.g. Season or Album) and grandparent folder (e.g. Show or Artist)
-        size_t lastSlash = localPath.rfind('/');
-        if (lastSlash != std::string::npos) {
-            std::string parentDir = localPath.substr(0, lastSlash);
-            if (isSafeDownloadDir(parentDir)) {
-                rmdir(parentDir.c_str());
-                size_t prevSlash = parentDir.rfind('/');
-                if (prevSlash != std::string::npos) {
-                    std::string gpDir = parentDir.substr(0, prevSlash);
-                    if (isSafeDownloadDir(gpDir)) {
-                        rmdir(gpDir.c_str());
-                    }
-                }
-            }
-        }
+        removeFileAndPruneEmptyDirs(localPath);
     }
     remove(metaPath.c_str());
     return true;
@@ -688,10 +693,29 @@ void DownloadManager::downloadLoop() {
             m_progress.failed = false;
         }
 
+        std::string downloadUrl = current.url;
+        // JIT (Just-In-Time) transcode URL resolution:
+        // Ephemeral transcode sessions in Plex expire within 15-30 seconds if not connected immediately.
+        // If a server is provided and the URL is empty (or has an ephemeral transcode session),
+        // resolve a fresh transcode decision and stream URL right now.
+        if (!current.server.selectedUri.empty() && (downloadUrl.empty() || downloadUrl.find("/transcode/universal/") != std::string::npos)) {
+            PlexAPI api(m_clientIdentifier.empty() ? current.config.clientIdentifier : m_clientIdentifier);
+            downloadUrl = api.buildTranscodeUrl(current.server, current.item, current.config);
+        }
+
+        if (downloadUrl.empty()) {
+            std::lock_guard<std::mutex> lock(m_progressMutex);
+            m_progress.statusText = "Failed to resolve download URL: " + current.item.title;
+            m_progress.failed = true;
+            continue;
+        }
+        m_currentUrl = downloadUrl;
+
         std::string finalPath = buildLocalMediaPath(current.item);
 
         FILE* outFile = fopen(finalPath.c_str(), "wb");
         if (!outFile) {
+            removeFileAndPruneEmptyDirs(finalPath);
             std::lock_guard<std::mutex> lock(m_progressMutex);
             m_progress.statusText = "Cannot create file on SD";
             m_progress.failed = true;
@@ -705,7 +729,7 @@ void DownloadManager::downloadLoop() {
         CURL* curl = curl_easy_init();
         if (!curl) {
             fclose(outFile);
-            remove(finalPath.c_str());
+            removeFileAndPruneEmptyDirs(finalPath);
             std::lock_guard<std::mutex> lock(m_progressMutex);
             m_progress.statusText = "Failed to initialize curl";
             m_progress.failed = true;
@@ -865,7 +889,7 @@ void DownloadManager::downloadLoop() {
             return 0;
         };
 
-        curl_easy_setopt(curl, CURLOPT_URL, current.url.c_str());
+        curl_easy_setopt(curl, CURLOPT_URL, downloadUrl.c_str());
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, (curl_write_callback)+writeCb);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
         curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, (curl_xferinfo_callback)+xferInfoCb);
@@ -910,6 +934,9 @@ void DownloadManager::downloadLoop() {
         }
 
         CURLcode res = curl_easy_perform(curl);
+        long httpCode = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
+        bool httpOk = (httpCode >= 200 && httpCode < 300);
 
         if (ctx.useWriterThread) {
             // Push any remaining partial block (< 64 KB) to the write queue
@@ -933,7 +960,7 @@ void DownloadManager::downloadLoop() {
         fflush(outFile);
         fclose(outFile);
 
-        if (res == CURLE_OK && !m_cancelRequested.load() && !ctx.writerError.load()) {
+        if (res == CURLE_OK && httpOk && !m_cancelRequested.load() && !ctx.writerError.load()) {
             int64_t fileSize = 0;
             struct stat st;
             if (stat(finalPath.c_str(), &st) == 0) {
@@ -946,12 +973,13 @@ void DownloadManager::downloadLoop() {
                 std::lock_guard<std::mutex> lock(m_progressMutex);
                 m_progress.statusText = "Saved: " + current.item.title;
             } else {
-                remove(finalPath.c_str());
+                removeFileAndPruneEmptyDirs(finalPath);
                 std::lock_guard<std::mutex> lock(m_progressMutex);
-                m_progress.statusText = "Download failed (corrupt): " + current.item.title;
+                m_progress.statusText = "Download failed (corrupt/incomplete): " + current.item.title;
+                m_progress.failed = true;
             }
         } else {
-            remove(finalPath.c_str());
+            removeFileAndPruneEmptyDirs(finalPath);
             if (m_cancelRequested.load()) {
                 std::lock_guard<std::mutex> lock(m_progressMutex);
                 m_progress.statusText = "Cancelled";
@@ -959,6 +987,10 @@ void DownloadManager::downloadLoop() {
             } else if (ctx.writerError.load()) {
                 std::lock_guard<std::mutex> lock(m_progressMutex);
                 m_progress.statusText = "Failed: SD card write error";
+                m_progress.failed = true;
+            } else if (res == CURLE_OK && !httpOk) {
+                std::lock_guard<std::mutex> lock(m_progressMutex);
+                m_progress.statusText = "Download failed (HTTP " + std::to_string(httpCode) + "): " + current.item.title;
                 m_progress.failed = true;
             } else {
                 std::lock_guard<std::mutex> lock(m_progressMutex);
@@ -983,14 +1015,17 @@ void DownloadManager::downloadLoop() {
 }
 #endif
 
-bool DownloadManager::startDownload(const PlexMediaItem& item, const std::string& downloadUrl) {
+bool DownloadManager::startDownload(const PlexMediaItem& item, const std::string& downloadUrl,
+                                   const PlexServer& server, const AppConfig& config) {
     if (isDownloaded(item.ratingKey)) return false;
     std::vector<std::pair<PlexMediaItem, std::string>> list;
     list.push_back({item, downloadUrl});
-    return queueDownloads(list) > 0;
+    return queueDownloads(list, server, config) > 0;
 }
 
-int DownloadManager::queueDownloads(const std::vector<std::pair<PlexMediaItem, std::string>>& items) {
+int DownloadManager::queueDownloads(const std::vector<std::pair<PlexMediaItem, std::string>>& items,
+                                   const PlexServer& server,
+                                   const AppConfig& config) {
     std::vector<QueuedDownload> toAdd;
     for (const auto& pair : items) {
         if (!pair.first.ratingKey.empty() && !isDownloaded(pair.first.ratingKey)) {
@@ -1009,7 +1044,7 @@ int DownloadManager::queueDownloads(const std::vector<std::pair<PlexMediaItem, s
                 }
             }
             if (!alreadyIn) {
-                toAdd.push_back({pair.first, pair.second});
+                toAdd.push_back({pair.first, pair.second, server, config});
             }
         }
     }

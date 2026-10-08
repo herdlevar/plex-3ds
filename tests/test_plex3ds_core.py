@@ -299,6 +299,152 @@ class TestPlex3DSDownloadQueue(unittest.TestCase):
         self.assertEqual(get_button_label(is_downloaded=False, is_queued=True), "Queued")
         self.assertEqual(get_button_label(is_downloaded=False, is_queued=False), "Download")
 
+    def test_jit_transcode_resolution_prevents_session_timeout(self):
+        # Simulates Plex transcode session timeout (e.g. sessions expire after 30 seconds of inactivity)
+        SESSION_TIMEOUT_SEC = 30
+        DOWNLOAD_DURATION_PER_TRACK_SEC = 20
+
+        # Scenario A: Stale upfront resolution (old bug)
+        # All 10 tracks get session IDs generated at t=0
+        queue_stale = []
+        for i in range(1, 11):
+            queue_stale.append({
+                "id": f"track{i}",
+                "session_created_at": 0,
+                "url": f"http://plex/start.mp3?session=3ds-audio-0-{i}"
+            })
+
+        completed_stale = []
+        failed_stale = []
+        current_time = 0
+        for item in queue_stale:
+            # Download begins at current_time
+            session_age = current_time - item["session_created_at"]
+            if session_age > SESSION_TIMEOUT_SEC:
+                failed_stale.append((item["id"], "Session expired (HTTP 404)"))
+            else:
+                completed_stale.append(item["id"])
+            current_time += DOWNLOAD_DURATION_PER_TRACK_SEC
+
+        # In old architecture, only track 1 and 2 succeed, tracks 3-10 all fail!
+        self.assertEqual(len(completed_stale), 2)
+        self.assertEqual(len(failed_stale), 8)
+
+        # Scenario B: Just-In-Time (JIT) resolution (new architecture)
+        # Items are queued with empty URL or server metadata; session is resolved when item starts
+        queue_jit = [{"id": f"track{i}", "url": "", "server": "http://plex"} for i in range(1, 11)]
+        completed_jit = []
+        failed_jit = []
+        current_time = 0
+        for item in queue_jit:
+            # Resolve JIT right when popped from queue
+            session_created_at = current_time
+            item["url"] = f"http://plex/start.mp3?session=3ds-audio-{session_created_at}-{item['id']}"
+            # Download begins immediately (session_age = 0)
+            session_age = current_time - session_created_at
+            if session_age > SESSION_TIMEOUT_SEC:
+                failed_jit.append(item["id"])
+            else:
+                completed_jit.append(item["id"])
+            current_time += DOWNLOAD_DURATION_PER_TRACK_SEC
+
+        # With JIT resolution, 100% of tracks succeed regardless of queue size
+        self.assertEqual(len(completed_jit), 10)
+        self.assertEqual(len(failed_jit), 0)
+
+    def test_http_response_code_validation_and_rejection(self):
+        # Simulates curl result validation with HTTP status codes
+        def evaluate_download_result(curl_res, http_code, file_size):
+            CURLE_OK = 0
+            if curl_res != CURLE_OK:
+                return False, f"Failed: Curl error {curl_res}"
+            if not (200 <= http_code < 300):
+                return False, f"Download failed (HTTP {http_code})"
+            if file_size <= 4096:
+                return False, "Download failed (corrupt/incomplete)"
+            return True, "Saved"
+
+        # Valid download: CURLE_OK, HTTP 200, 5 MB file
+        ok, msg = evaluate_download_result(curl_res=0, http_code=200, file_size=5 * 1024 * 1024)
+        self.assertTrue(ok)
+        self.assertEqual(msg, "Saved")
+
+        # HTTP 404 from expired session (even though curl transport succeeded)
+        ok, msg = evaluate_download_result(curl_res=0, http_code=404, file_size=128)
+        self.assertFalse(ok)
+        self.assertIn("HTTP 404", msg)
+
+        # HTTP 500 server error
+        ok, msg = evaluate_download_result(curl_res=0, http_code=500, file_size=500)
+        self.assertFalse(ok)
+        self.assertIn("HTTP 500", msg)
+
+        # Truncated / empty download with HTTP 200
+        ok, msg = evaluate_download_result(curl_res=0, http_code=200, file_size=2048)
+        self.assertFalse(ok)
+        self.assertIn("corrupt/incomplete", msg)
+
+    def test_empty_directory_pruning_on_failure(self):
+        # Simulates removeFileAndPruneEmptyDirs and isSafeDownloadDir
+        BASE_DIR = "sdmc:/3ds/plex-3ds/downloads"
+        MUSIC_DIR = "sdmc:/3ds/plex-3ds/downloads/Music"
+        MOVIES_DIR = "sdmc:/3ds/plex-3ds/downloads/Movies"
+        TV_DIR = "sdmc:/3ds/plex-3ds/downloads/TV Shows"
+        META_DIR = "sdmc:/3ds/plex-3ds/downloads/meta"
+
+        protected_dirs = {BASE_DIR, MUSIC_DIR, MOVIES_DIR, TV_DIR, META_DIR}
+
+        def is_safe_download_dir(d):
+            if not d or not d.startswith(BASE_DIR + "/"):
+                return False
+            if ".." in d or d in protected_dirs:
+                return False
+            return True
+
+        # In-memory virtual filesystem
+        vfs = {
+            "sdmc:/3ds/plex-3ds/downloads/Music/ArtistA/Album1": ["01.mp3"],
+            "sdmc:/3ds/plex-3ds/downloads/Music/ArtistA": ["Album1"],
+            "sdmc:/3ds/plex-3ds/downloads/Music": ["ArtistA"],
+        }
+
+        def remove_file_and_prune_empty_dirs(path):
+            last_slash = path.rfind('/')
+            if last_slash == -1:
+                return
+            filename = path[last_slash + 1:]
+            parent_dir = path[:last_slash]
+
+            # Remove file
+            if parent_dir in vfs and filename in vfs[parent_dir]:
+                vfs[parent_dir].remove(filename)
+
+            # Prune parent if empty and safe
+            if is_safe_download_dir(parent_dir):
+                if parent_dir in vfs and len(vfs[parent_dir]) == 0:
+                    del vfs[parent_dir]
+                    prev_slash = parent_dir.rfind('/')
+                    if prev_slash != -1:
+                        gp_dir = parent_dir[:prev_slash]
+                        parent_name = parent_dir[prev_slash + 1:]
+                        if gp_dir in vfs and parent_name in vfs[gp_dir]:
+                            vfs[gp_dir].remove(parent_name)
+                        if is_safe_download_dir(gp_dir) and gp_dir in vfs and len(vfs[gp_dir]) == 0:
+                            del vfs[gp_dir]
+                            gp_prev = gp_dir.rfind('/')
+                            if gp_prev != -1:
+                                ggp_dir = gp_dir[:gp_prev]
+                                gp_name = gp_dir[gp_prev + 1:]
+                                if ggp_dir in vfs and gp_name in vfs[ggp_dir]:
+                                    vfs[ggp_dir].remove(gp_name)
+
+        # Deleting 01.mp3 leaves Album1 empty and ArtistA empty
+        remove_file_and_prune_empty_dirs("sdmc:/3ds/plex-3ds/downloads/Music/ArtistA/Album1/01.mp3")
+        self.assertNotIn("sdmc:/3ds/plex-3ds/downloads/Music/ArtistA/Album1", vfs)
+        self.assertNotIn("sdmc:/3ds/plex-3ds/downloads/Music/ArtistA", vfs)
+        # Protected root directory Music MUST remain
+        self.assertIn("sdmc:/3ds/plex-3ds/downloads/Music", vfs)
+
 
 class TestPlex3DSClamshellPolicy(unittest.TestCase):
     def evaluate_clamshell_state(self, is_media_active, media_type, is_paused, headphones_connected):

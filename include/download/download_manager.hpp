@@ -28,6 +28,8 @@ struct DownloadProgress {
 struct QueuedDownload {
     PlexMediaItem item;
     std::string url;
+    PlexServer server;
+    AppConfig config;
 };
 
 class DownloadManager {
@@ -48,8 +50,12 @@ public:
     int64_t getSDTotalSpaceBytes();
 
     // Actions
-    bool startDownload(const PlexMediaItem& item, const std::string& downloadUrl);
-    int queueDownloads(const std::vector<std::pair<PlexMediaItem, std::string>>& items);
+    bool startDownload(const PlexMediaItem& item, const std::string& downloadUrl = "",
+                       const PlexServer& server = PlexServer(),
+                       const AppConfig& config = AppConfig());
+    int queueDownloads(const std::vector<std::pair<PlexMediaItem, std::string>>& items,
+                       const PlexServer& server = PlexServer(),
+                       const AppConfig& config = AppConfig());
     void cancelDownload();
     bool cancelQueuedItem(const std::string& ratingKey);
     bool deleteDownload(const std::string& ratingKey);

@@ -592,6 +592,7 @@ static void openDownloadsView(UIRenderer& ui) {
 }
 
 static void downloadSingleItem(const PlexMediaItem& item, const PlexServer& server, const PlexAPI& api) {
+    (void)api;
     if (g_downloadManager.isDownloaded(item.ratingKey)) {
         setStatusMessage(item.title + " is already downloaded", 3000);
         return;
@@ -605,21 +606,16 @@ static void downloadSingleItem(const PlexMediaItem& item, const PlexServer& serv
         }
         return;
     }
-    std::string dlUrl = api.buildTranscodeUrl(server, item, g_config);
-    if (!dlUrl.empty()) {
-        std::vector<std::pair<PlexMediaItem, std::string>> list;
-        list.push_back({item, dlUrl});
-        int added = g_downloadManager.queueDownloads(list);
-        if (added > 0) {
-            int pos = g_downloadManager.getQueuePosition(item.ratingKey);
-            if (pos <= 1) {
-                setStatusMessage("Downloading: " + item.title, 3500);
-            } else {
-                setStatusMessage("Queued: " + item.title + " (#" + std::to_string(pos) + ")", 3500);
-            }
+    std::vector<std::pair<PlexMediaItem, std::string>> list;
+    list.push_back({item, ""});
+    int added = g_downloadManager.queueDownloads(list, server, g_config);
+    if (added > 0) {
+        int pos = g_downloadManager.getQueuePosition(item.ratingKey);
+        if (pos <= 1) {
+            setStatusMessage("Downloading: " + item.title, 3500);
+        } else {
+            setStatusMessage("Queued: " + item.title + " (#" + std::to_string(pos) + ")", 3500);
         }
-    } else {
-        setStatusMessage("Failed to build download URL", 3000);
     }
 }
 
@@ -650,10 +646,7 @@ static void downloadContainer(const PlexMediaItem& containerItem, const PlexServ
                 if (child.parentTitle.empty()) child.parentTitle = containerItem.title;
                 if (child.grandparentTitle.empty() && !containerItem.parentTitle.empty()) child.grandparentTitle = containerItem.parentTitle;
             }
-            std::string dlUrl = api.buildTranscodeUrl(server, child, g_config);
-            if (!dlUrl.empty()) {
-                queueList.push_back({child, dlUrl});
-            }
+            queueList.push_back({child, ""});
         }
     }
 
@@ -667,11 +660,12 @@ static void downloadContainer(const PlexMediaItem& containerItem, const PlexServ
         return;
     }
 
-    int queued = g_downloadManager.queueDownloads(queueList);
+    int queued = g_downloadManager.queueDownloads(queueList, server, g_config);
     setStatusMessage("Queued " + std::to_string(queued) + " " + unit + " from " + containerItem.title, 3500);
 }
 
 static void downloadCurrentList(const PlexServer& server, const PlexAPI& api, const std::string& title) {
+    (void)api;
     std::vector<std::pair<PlexMediaItem, std::string>> queueList;
     int alreadyCount = 0;
     for (auto child : g_items) {
@@ -683,10 +677,7 @@ static void downloadCurrentList(const PlexServer& server, const PlexAPI& api, co
             if (child.parentTitle.empty() && !title.empty()) {
                 child.parentTitle = title;
             }
-            std::string dlUrl = api.buildTranscodeUrl(server, child, g_config);
-            if (!dlUrl.empty()) {
-                queueList.push_back({child, dlUrl});
-            }
+            queueList.push_back({child, ""});
         }
     }
 
@@ -699,7 +690,7 @@ static void downloadCurrentList(const PlexServer& server, const PlexAPI& api, co
         return;
     }
 
-    int queued = g_downloadManager.queueDownloads(queueList);
+    int queued = g_downloadManager.queueDownloads(queueList, server, g_config);
     setStatusMessage("Queued " + std::to_string(queued) + " items from " + title, 3500);
 }
 
