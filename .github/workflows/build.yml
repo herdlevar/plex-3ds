@@ -35,11 +35,12 @@ jobs:
       - name: Build CIA Package
         run: |
           curl -sL https://github.com/3DSGuy/Project_CTR/releases/download/makerom-v0.19.0/makerom-v0.19.0-ubuntu_x86_64.zip -o makerom.zip
-          unzip -q makerom.zip -d /usr/local/bin
+          python3 -c "import zipfile; zipfile.ZipFile('makerom.zip').extract('makerom', '/usr/local/bin')" || unzip -q makerom.zip -d /usr/local/bin
           chmod +x /usr/local/bin/makerom
 
           curl -sL https://github.com/carstene1ns/3ds-bannertool/releases/download/1.2.3/bannertool-1.2.3-linux.tar.gz -o bannertool.tar.gz
-          tar -xzf bannertool.tar.gz -C /usr/local/bin bannertool
+          tar -xzf bannertool.tar.gz
+          cp bannertool-1.2.3-linux/bannertool /usr/local/bin/bannertool
           chmod +x /usr/local/bin/bannertool
 
           bannertool makebanner -i banner.png -a silent.wav -o banner.bnr
