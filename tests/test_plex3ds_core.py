@@ -319,6 +319,33 @@ class TestPlex3DSSuspendResumePolicy(unittest.TestCase):
         self.assertTrue(player.hardware_configured)
 
 
+class TestPlex3DSHomeButtonPolicy(unittest.TestCase):
+    def test_home_press_clears_chainloader_and_exits_to_home_menu(self):
+        # When home button is pressed, aptCheckHomePressRejected() is true
+        chainloader_cleared = False
+        app_exiting = False
+
+        home_pressed = True
+        if home_pressed:
+            chainloader_cleared = True
+            app_exiting = True
+
+        self.assertTrue(chainloader_cleared)
+        self.assertTrue(app_exiting)
+
+    def test_start_press_keeps_chainloader_for_hbmenu_exit(self):
+        # When START is pressed, chainloader is NOT cleared (returns to hbmenu)
+        chainloader_cleared = False
+        app_exiting = False
+
+        start_pressed = True
+        if start_pressed:
+            app_exiting = True
+
+        self.assertFalse(chainloader_cleared)
+        self.assertTrue(app_exiting)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
 

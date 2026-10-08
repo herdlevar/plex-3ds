@@ -776,7 +776,7 @@ int main(int argc, char* argv[]) {
     g_pVideoPlayer = &videoPlayer;
 #ifdef __3DS__
     aptHook(&g_aptCookie, onAptHook, nullptr);
-    aptSetHomeAllowed(true);
+    aptSetHomeAllowed(false);
 #endif
 
     g_downloadManager.init();
@@ -820,6 +820,12 @@ int main(int argc, char* argv[]) {
 #ifdef __3DS__
     while (aptMainLoop()) {
         if (g_appExiting.load()) {
+            break;
+        }
+
+        if (aptCheckHomePressRejected()) {
+            aptClearChainloader();
+            g_appExiting = true;
             break;
         }
 
