@@ -21,6 +21,8 @@ public:
     bool play(const std::string& audioUrl, int totalSec = 0);
     void pause();
     void resume();
+    void suspend();
+    void resumeFromSuspend();
     void stop();
     void seek(int deltaSeconds);
     void seekTo(int targetSeconds);
@@ -38,6 +40,7 @@ private:
     std::atomic<bool> m_isPlaying{false};
     std::atomic<bool> m_isPaused{false};
     std::atomic<bool> m_decodePaused{false};
+    std::atomic<bool> m_wasSuspended{false};
     std::atomic<bool> m_stopRequested{false};
     std::atomic<int> m_currentSec{0};
     std::atomic<int> m_initialSec{0};

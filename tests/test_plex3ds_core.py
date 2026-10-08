@@ -215,6 +215,110 @@ class TestPlex3DSClamshellPolicy(unittest.TestCase):
         self.assertFalse(on_headphone_transition(True, False, False))
 
 
+class TestPlex3DSSuspendResumePolicy(unittest.TestCase):
+    class MockAudioPlayer:
+        def __init__(self):
+            self.is_playing = False
+            self.is_paused = False
+            self.was_suspended = False
+            self.channel_reset_count = 0
+            self.hardware_configured = False
+
+        def play(self):
+            self.is_playing = True
+            self.is_paused = False
+            self.was_suspended = False
+            self.hardware_configured = True
+
+        def pause(self):
+            self.is_paused = True
+
+        def suspend(self):
+            self.was_suspended = True
+            self.is_paused = True
+            self.channel_reset_count += 1
+
+        def resume_from_suspend(self):
+            self.channel_reset_count += 1
+            self.hardware_configured = True
+            self.was_suspended = False
+            self.is_paused = False
+
+        def resume(self):
+            if self.was_suspended:
+                self.resume_from_suspend()
+                return
+            self.is_paused = False
+
+    def test_suspend_while_playing_audio(self):
+        player = self.MockAudioPlayer()
+        player.play()
+        self.assertTrue(player.is_playing)
+        self.assertFalse(player.is_paused)
+
+        # Simulate APTHOOK_ONSUSPEND
+        audio_was_playing_on_suspend = False
+        if player.is_playing:
+            if not player.is_paused:
+                audio_was_playing_on_suspend = True
+            player.suspend()
+
+        self.assertTrue(audio_was_playing_on_suspend)
+        self.assertTrue(player.was_suspended)
+        self.assertTrue(player.is_paused)
+        self.assertEqual(player.channel_reset_count, 1)
+
+        # Simulate APTHOOK_ONRESTORE (DSP is still asleep!)
+        needs_post_wakeup_resume = True
+
+        # Simulate main loop post-wakeup execution (DSP is awake!)
+        if needs_post_wakeup_resume:
+            needs_post_wakeup_resume = False
+            if audio_was_playing_on_suspend:
+                player.resume_from_suspend()
+                audio_was_playing_on_suspend = False
+
+        self.assertFalse(player.is_paused)
+        self.assertFalse(player.was_suspended)
+        self.assertTrue(player.hardware_configured)
+        self.assertEqual(player.channel_reset_count, 2)
+
+    def test_suspend_while_paused_audio(self):
+        player = self.MockAudioPlayer()
+        player.play()
+        player.pause()
+        self.assertTrue(player.is_paused)
+
+        # Simulate APTHOOK_ONSUSPEND
+        audio_was_playing_on_suspend = False
+        if player.is_playing:
+            if not player.is_paused:
+                audio_was_playing_on_suspend = True
+            player.suspend()
+
+        self.assertFalse(audio_was_playing_on_suspend)
+        self.assertTrue(player.was_suspended)
+        self.assertTrue(player.is_paused)
+
+        # Simulate main loop post-wakeup execution
+        needs_post_wakeup_resume = True
+        if needs_post_wakeup_resume:
+            needs_post_wakeup_resume = False
+            if audio_was_playing_on_suspend:
+                player.resume_from_suspend()
+                audio_was_playing_on_suspend = False
+
+        # Audio should remain paused!
+        self.assertTrue(player.is_paused)
+        self.assertTrue(player.was_suspended)
+
+        # When user manually presses play/resume later, resume() must detect was_suspended
+        player.resume()
+        self.assertFalse(player.is_paused)
+        self.assertFalse(player.was_suspended)
+        self.assertTrue(player.hardware_configured)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
 

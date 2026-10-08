@@ -64,6 +64,7 @@ std::atomic<bool> g_gpuRightLost{false};
 static aptHookCookie g_aptCookie;
 static bool g_videoWasPlayingOnSuspend = false;
 static bool g_audioWasPlayingOnSuspend = false;
+static std::atomic<bool> g_needsPostWakeupResume{false};
 
 static bool s_bottomScreenOff = false;
 static uint64_t s_lastUserActivityTime = 0;
@@ -88,22 +89,6 @@ static void onAptHook(APT_HookType hook, void* param) {
     (void)param;
     switch (hook) {
         case APTHOOK_ONSUSPEND:
-            g_gpuRightLost = true;
-            g_isSuspended = true;
-            if (s_bottomScreenOff) {
-                s_bottomScreenOff = false;
-                GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_BOTTOM);
-            }
-            if (g_pVideoPlayer && g_pVideoPlayer->isPlaying() && !g_pVideoPlayer->isPaused()) {
-                g_videoWasPlayingOnSuspend = true;
-                g_pVideoPlayer->pause();
-            }
-            if (g_pAudioPlayer && g_pAudioPlayer->isPlaying() && !g_pAudioPlayer->isPaused()) {
-                g_audioWasPlayingOnSuspend = true;
-                g_pAudioPlayer->pause();
-            }
-            break;
-
         case APTHOOK_ONSLEEP:
             g_gpuRightLost = true;
             g_isSuspended = true;
@@ -111,38 +96,33 @@ static void onAptHook(APT_HookType hook, void* param) {
                 s_bottomScreenOff = false;
                 GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_BOTTOM);
             }
-            if (g_pVideoPlayer && g_pVideoPlayer->isPlaying() && !g_pVideoPlayer->isPaused()) {
-                g_videoWasPlayingOnSuspend = true;
-                g_pVideoPlayer->pause();
+            if (g_pVideoPlayer && g_pVideoPlayer->isPlaying()) {
+                if (!g_pVideoPlayer->isPaused()) {
+                    g_videoWasPlayingOnSuspend = true;
+                }
+                g_pVideoPlayer->suspend();
             }
-            if (g_pAudioPlayer && g_pAudioPlayer->isPlaying() && !g_pAudioPlayer->isPaused()) {
-                g_audioWasPlayingOnSuspend = true;
-                g_pAudioPlayer->pause();
+            if (g_pAudioPlayer && g_pAudioPlayer->isPlaying()) {
+                if (!g_pAudioPlayer->isPaused()) {
+                    g_audioWasPlayingOnSuspend = true;
+                }
+                g_pAudioPlayer->suspend();
             }
             break;
 
         case APTHOOK_ONRESTORE:
         case APTHOOK_ONWAKEUP:
+            // CRITICAL: Do NOT access DSP/NDSP services here!
+            // In libctru, APTHOOK_ONRESTORE is called BEFORE aptDspWakeup().
+            // Hardware resume is deferred to the main loop once aptMainLoop() returns.
             g_gpuRightLost = false;
-            ndspSetMasterVol(1.0f);
             s_bottomScreenOff = false;
             GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_TOP);
             GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_BOTTOM);
-            if (g_videoWasPlayingOnSuspend && g_pVideoPlayer) {
-                g_pVideoPlayer->resume();
-                g_videoWasPlayingOnSuspend = false;
-            }
-            if (g_audioWasPlayingOnSuspend && g_pAudioPlayer) {
-                g_pAudioPlayer->resume();
-                g_audioWasPlayingOnSuspend = false;
-            }
             s_shellClosed = false;
             s_lastUserActivityTime = osGetTime();
             g_isSuspended = false;
-            {
-                bool canClamshell = (g_pAudioPlayer && g_pAudioPlayer->isPlaying() && !g_pAudioPlayer->isPaused()) && isHeadphoneConnected();
-                aptSetSleepAllowed(!canClamshell);
-            }
+            g_needsPostWakeupResume = true;
             break;
 
         case APTHOOK_ONEXIT:
@@ -857,6 +837,20 @@ int main(int argc, char* argv[]) {
         if (g_isSuspended.load() || g_gpuRightLost.load()) {
             svcSleepThread(20000000);
             continue;
+        }
+
+        if (g_needsPostWakeupResume.exchange(false)) {
+            ndspSetMasterVol(1.0f);
+            if (g_videoWasPlayingOnSuspend && g_pVideoPlayer) {
+                g_pVideoPlayer->resumeFromSuspend();
+                g_videoWasPlayingOnSuspend = false;
+            }
+            if (g_audioWasPlayingOnSuspend && g_pAudioPlayer) {
+                g_pAudioPlayer->resumeFromSuspend();
+                g_audioWasPlayingOnSuspend = false;
+            }
+            bool canClamshell = (g_pAudioPlayer && g_pAudioPlayer->isPlaying() && !g_pAudioPlayer->isPaused()) && isHeadphoneConnected();
+            aptSetSleepAllowed(!canClamshell);
         }
 
         hidScanInput();

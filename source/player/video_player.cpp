@@ -468,13 +468,37 @@ void VideoPlayer::decodeLoop() {
 
     while (!m_stopRequested.load() && !g_appExiting.load()) {
         if (m_isPaused.load() || g_isSuspended.load()) {
+            m_decodePaused = true;
             uint64_t pauseStart = osGetTime();
             while ((m_isPaused.load() || g_isSuspended.load()) && !m_stopRequested.load() && !g_appExiting.load()) {
                 svcSleepThread(20000000); // 20ms
             }
             playbackStartTick += (osGetTime() - pauseStart);
             lastFrameTick = osGetTime();
+            m_decodePaused = false;
+            if (m_stopRequested.load() || g_appExiting.load()) break;
         }
+
+#ifdef __3DS__
+        if (m_wasSuspended.exchange(false)) {
+            ndspChnReset(m_audioChannel);
+            ndspChnSetInterp(m_audioChannel, NDSP_INTERP_LINEAR);
+            if (lastInRate > 0) ndspChnSetRate(m_audioChannel, (float)lastInRate);
+            ndspChnSetFormat(m_audioChannel, NDSP_FORMAT_STEREO_PCM16);
+            float mix[12];
+            memset(mix, 0, sizeof(mix));
+            mix[0] = 1.0f;
+            mix[1] = 1.0f;
+            ndspChnSetMix(m_audioChannel, mix);
+            for (size_t i = 0; i < NUM_AUDIO_BUFS; i++) {
+                audioWaveBufs[i].status = NDSP_WBUF_DONE;
+            }
+            currentAudioBuf = 0;
+            currentAudioSamples = 0;
+            playbackStartTick = 0;
+            playbackStartPtsMs = -1;
+        }
+#endif
 
         int ret = av_read_frame(fmtCtx, pkt);
         if (ret < 0) {
@@ -544,6 +568,7 @@ void VideoPlayer::decodeLoop() {
                             currentAudioSamples = 0;
 
                             while (audioWaveBufs[currentAudioBuf].status != NDSP_WBUF_DONE && !m_stopRequested.load() && !g_appExiting.load()) {
+                                if (m_isPaused.load() || g_isSuspended.load()) break;
                                 svcSleepThread(2000000); // 2ms
                             }
                         }
@@ -644,6 +669,7 @@ int VideoPlayer::readStream(uint8_t* buf, int bufSize) {
     while (m_ringSize.load() < (size_t)bufSize) {
         if (m_stopRequested.load() || g_appExiting.load()) return -1;
         if (m_isPaused.load() || g_isSuspended.load()) {
+            m_decodePaused = true;
             while ((m_isPaused.load() || g_isSuspended.load()) && !m_stopRequested.load() && !g_appExiting.load()) {
 #ifdef __3DS__
                 svcSleepThread(20000000); // 20ms
@@ -651,6 +677,7 @@ int VideoPlayer::readStream(uint8_t* buf, int bufSize) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
 #endif
             }
+            m_decodePaused = false;
             if (m_stopRequested.load() || g_appExiting.load()) return -1;
         }
         if (m_downloadFinished.load()) {
@@ -684,6 +711,8 @@ bool VideoPlayer::start(const std::string& streamUrl, int64_t durationMs, int64_
     m_currentTimeMs = initialOffsetMs;
     m_isPlaying = true;
     m_isPaused = false;
+    m_wasSuspended = false;
+    m_decodePaused = false;
     m_stopRequested = false;
     m_hasFrame = false;
     m_bytesReceived = 0;
@@ -777,15 +806,53 @@ void VideoPlayer::pause() {
 void VideoPlayer::resume() {
 #ifdef __3DS__
     if (m_initialized) {
+        if (m_wasSuspended.load()) {
+            resumeFromSuspend();
+            return;
+        }
         ndspChnSetPaused(m_audioChannel, false);
     }
 #endif
     m_isPaused = false;
 }
 
+void VideoPlayer::suspend() {
+    if (!m_initialized) return;
+    m_wasSuspended = true;
+    m_isPaused = true;
+#ifdef __3DS__
+    if (m_decodeThread && m_isPlaying.load()) {
+        for (int i = 0; i < 50 && !m_decodePaused.load(); i++) {
+            svcSleepThread(5000000ULL); // 5ms
+        }
+    }
+    ndspChnReset(m_audioChannel);
+#endif
+}
+
+void VideoPlayer::resumeFromSuspend() {
+#ifdef __3DS__
+    if (m_initialized) {
+        ndspChnReset(m_audioChannel);
+        ndspChnSetInterp(m_audioChannel, NDSP_INTERP_LINEAR);
+        ndspChnSetRate(m_audioChannel, 44100.0f);
+        ndspChnSetFormat(m_audioChannel, NDSP_FORMAT_STEREO_PCM16);
+        float mix[12];
+        memset(mix, 0, sizeof(mix));
+        mix[0] = 1.0f;
+        mix[1] = 1.0f;
+        ndspChnSetMix(m_audioChannel, mix);
+    }
+#endif
+    m_wasSuspended = false;
+    m_isPaused = false;
+}
+
 void VideoPlayer::stop() {
     m_stopRequested = true;
     m_isPaused = false;
+    m_wasSuspended = false;
+    m_decodePaused = false;
 
 #ifdef __3DS__
     if (m_decodeThread) {

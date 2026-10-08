@@ -25,6 +25,8 @@ public:
     void update();
     void pause();
     void resume();
+    void suspend();
+    void resumeFromSuspend();
     void stop();
     void seek(int deltaSeconds);
     void seekTo(int targetSeconds);
@@ -61,6 +63,8 @@ public:
 private:
     std::atomic<bool> m_isPlaying{false};
     std::atomic<bool> m_isPaused{false};
+    std::atomic<bool> m_decodePaused{false};
+    std::atomic<bool> m_wasSuspended{false};
     std::atomic<bool> m_stopRequested{false};
     std::atomic<bool> m_hasFrame{false};
     std::atomic<int64_t> m_currentTimeMs{0};
