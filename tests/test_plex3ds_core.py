@@ -1237,6 +1237,64 @@ class TestPlex3DSSecurityAuditing(unittest.TestCase):
         self.assertEqual(resolve_selected_index("LIBRARY_LIST", 240, 2, 0), 2)
         self.assertEqual(resolve_selected_index("SERVER_SELECT", 240, 2, 1), 1)
 
+    def test_scroll_auto_repeat_stops_at_boundary_without_wrapping(self):
+        # Simulates navigation list cursor movement
+        class ListNavigator:
+            def __init__(self, count, max_vis=5):
+                self.count = count
+                self.max_vis = max_vis
+                self.selected_idx = 0
+                self.scroll_offset = 0
+
+            def on_nav(self, nav_down, nav_up, is_down_initial, is_up_initial):
+                if nav_down:
+                    if self.selected_idx < self.count - 1:
+                        self.selected_idx += 1
+                        if self.selected_idx >= self.scroll_offset + self.max_vis:
+                            self.scroll_offset = self.selected_idx - self.max_vis + 1
+                    elif is_down_initial:
+                        self.selected_idx = 0
+                        self.scroll_offset = 0
+
+                if nav_up:
+                    if self.selected_idx > 0:
+                        self.selected_idx -= 1
+                        if self.selected_idx < self.scroll_offset:
+                            self.scroll_offset = self.selected_idx
+                    elif is_up_initial:
+                        self.selected_idx = self.count - 1
+                        self.scroll_offset = max(0, self.count - self.max_vis)
+
+        nav = ListNavigator(count=10)
+        # 1. Tap Up at index 0 -> wraps to bottom (9)
+        nav.on_nav(nav_down=False, nav_up=True, is_down_initial=False, is_up_initial=True)
+        self.assertEqual(nav.selected_idx, 9)
+
+        # 2. Tap Down at index 9 -> wraps to top (0)
+        nav.on_nav(nav_down=True, nav_up=False, is_down_initial=True, is_up_initial=False)
+        self.assertEqual(nav.selected_idx, 0)
+
+        # 3. Hold Down from index 0 across 20 frames (auto-repeat, is_down_initial=False)
+        for _ in range(20):
+            nav.on_nav(nav_down=True, nav_up=False, is_down_initial=False, is_up_initial=False)
+        # MUST clamp and stop at index 9, NOT wrap back to 0!
+        self.assertEqual(nav.selected_idx, 9)
+
+        # 4. Now release and tap Down (is_down_initial=True) -> wraps to 0
+        nav.on_nav(nav_down=True, nav_up=False, is_down_initial=True, is_up_initial=False)
+        self.assertEqual(nav.selected_idx, 0)
+
+        # 5. Hold Up from index 9 across 20 frames (auto-repeat, is_up_initial=False)
+        nav.selected_idx = 9
+        for _ in range(20):
+            nav.on_nav(nav_down=False, nav_up=True, is_down_initial=False, is_up_initial=False)
+        # MUST clamp and stop at index 0, NOT wrap back to 9!
+        self.assertEqual(nav.selected_idx, 0)
+
+        # 6. Now release and tap Up (is_up_initial=True) -> wraps to 9
+        nav.on_nav(nav_down=False, nav_up=True, is_down_initial=False, is_up_initial=True)
+        self.assertEqual(nav.selected_idx, 9)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -2060,8 +2060,8 @@ int main(int argc, char* argv[]) {
                         if (g_selectedServerIdx >= g_scrollOffset + maxVis) {
                             g_scrollOffset = g_selectedServerIdx - maxVis + 1;
                         }
-                    } else {
-                        // Wrap to top
+                    } else if (isDownInitial) {
+                        // Wrap to top only on explicit button press, not auto-repeat hold
                         g_selectedServerIdx = 0;
                         g_scrollOffset = 0;
                     }
@@ -2072,8 +2072,8 @@ int main(int argc, char* argv[]) {
                         if (g_selectedServerIdx < g_scrollOffset) {
                             g_scrollOffset = g_selectedServerIdx;
                         }
-                    } else {
-                        // Wrap to bottom
+                    } else if (isUpInitial) {
+                        // Wrap to bottom only on explicit button press, not auto-repeat hold
                         g_selectedServerIdx = count - 1;
                         g_scrollOffset = std::max(0, count - maxVis);
                     }
@@ -2183,8 +2183,8 @@ int main(int argc, char* argv[]) {
                         if (g_selectedLibraryIdx >= g_scrollOffset + maxVis) {
                             g_scrollOffset = g_selectedLibraryIdx - maxVis + 1;
                         }
-                    } else {
-                        // Wrap to top
+                    } else if (isDownInitial) {
+                        // Wrap to top only on explicit button press, not auto-repeat hold
                         g_selectedLibraryIdx = 0;
                         g_scrollOffset = 0;
                     }
@@ -2195,8 +2195,8 @@ int main(int argc, char* argv[]) {
                         if (g_selectedLibraryIdx < g_scrollOffset) {
                             g_scrollOffset = g_selectedLibraryIdx;
                         }
-                    } else {
-                        // Wrap to bottom
+                    } else if (isUpInitial) {
+                        // Wrap to bottom only on explicit button press, not auto-repeat hold
                         g_selectedLibraryIdx = count - 1;
                         g_scrollOffset = std::max(0, count - maxVis);
                     }
@@ -2272,8 +2272,8 @@ int main(int argc, char* argv[]) {
                         if (g_selectedItemIdx >= g_scrollOffset + maxVis) {
                             g_scrollOffset = g_selectedItemIdx - maxVis + 1;
                         }
-                    } else {
-                        // Wrap to top
+                    } else if (isDownInitial) {
+                        // Wrap to top only on explicit button press, not auto-repeat hold
                         g_selectedItemIdx = 0;
                         g_scrollOffset = 0;
                     }
@@ -2284,8 +2284,8 @@ int main(int argc, char* argv[]) {
                         if (g_selectedItemIdx < g_scrollOffset) {
                             g_scrollOffset = g_selectedItemIdx;
                         }
-                    } else {
-                        // Wrap to bottom
+                    } else if (isUpInitial) {
+                        // Wrap to bottom only on explicit button press, not auto-repeat hold
                         g_selectedItemIdx = count - 1;
                         g_scrollOffset = std::max(0, count - maxVis);
                     }
