@@ -210,13 +210,19 @@ void AudioPlayer::downloadLoop() {
 #endif
                     continue;
                 }
-                curChunk = (AudioChunk*)malloc(sizeof(AudioChunk));
-                if (!curChunk) {
-                    // Memory low: sleep and retry
+                int retries = 0;
+                while (!curChunk && retries < 5 && !p->m_stopRequested.load() && !g_appExiting.load()) {
+                    curChunk = (AudioChunk*)malloc(sizeof(AudioChunk));
+                    if (!curChunk) {
+                        retries++;
 #ifdef __3DS__
-                    svcSleepThread(50000000);
+                        svcSleepThread(50000000); // 50ms wait
 #endif
-                    continue;
+                    }
+                }
+                if (!curChunk) {
+                    // Out of memory: abort curl transfer cleanly instead of spinning infinitely
+                    return 0;
                 }
                 curChunk->size = 0;
                 {
@@ -258,8 +264,12 @@ void AudioPlayer::downloadLoop() {
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
 
-    if (access("/etc/ssl/certs/cacert.pem", R_OK) == 0) {
-        curl_easy_setopt(curl, CURLOPT_CAINFO, "/etc/ssl/certs/cacert.pem");
+    static const char* CA_BUNDLE_PATH = "sdmc:/3ds/plex-3ds/cacert.pem";
+    if (access(CA_BUNDLE_PATH, R_OK) == 0 || access("/etc/ssl/certs/cacert.pem", R_OK) == 0) {
+        const char* caPath = (access(CA_BUNDLE_PATH, R_OK) == 0) ? CA_BUNDLE_PATH : "/etc/ssl/certs/cacert.pem";
+        curl_easy_setopt(curl, CURLOPT_CAINFO, caPath);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
     } else {
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);

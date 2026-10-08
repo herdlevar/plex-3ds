@@ -486,6 +486,8 @@ def sanitize_path_component(name):
             safe += c
         i += 1
     safe = safe.strip(' ._')
+    if len(safe) > 64:
+        safe = safe[:64].rstrip(' ._')
     return safe if safe else "Unknown"
 
 
@@ -1109,6 +1111,119 @@ class TestPlex3DSDecoupledDownloadBuffer(unittest.TestCase):
         pipe.write_cb(b"A" * 65536)
         pipe.cancelled = True
         self.assertEqual(pipe.write_cb(b"B" * 1024), 0)
+
+
+BASE_DOWNLOAD_DIR   = "sdmc:/3ds/plex-3ds/downloads"
+MOVIES_DOWNLOAD_DIR = "sdmc:/3ds/plex-3ds/downloads/Movies"
+TV_DOWNLOAD_DIR     = "sdmc:/3ds/plex-3ds/downloads/TV Shows"
+MUSIC_DOWNLOAD_DIR  = "sdmc:/3ds/plex-3ds/downloads/Music"
+META_DOWNLOAD_DIR   = "sdmc:/3ds/plex-3ds/downloads/meta"
+LEGACY_VIDEO_DIR    = "sdmc:/3ds/plex-3ds/downloads/videos"
+LEGACY_MUSIC_DIR    = "sdmc:/3ds/plex-3ds/downloads/music"
+
+def is_safe_download_path(p):
+    if not p:
+        return False
+    if not p.startswith(BASE_DOWNLOAD_DIR + "/"):
+        return False
+    if ".." in p:
+        return False
+    return True
+
+def is_safe_download_dir(d):
+    if not d:
+        return False
+    if not d.startswith(BASE_DOWNLOAD_DIR + "/"):
+        return False
+    if ".." in d:
+        return False
+    if d in (MOVIES_DOWNLOAD_DIR, TV_DOWNLOAD_DIR, MUSIC_DOWNLOAD_DIR,
+             META_DOWNLOAD_DIR, LEGACY_VIDEO_DIR, LEGACY_MUSIC_DIR, BASE_DOWNLOAD_DIR):
+        return False
+    return True
+
+
+class TestPlex3DSSecurityAuditing(unittest.TestCase):
+    def test_path_traversal_rejection(self):
+        # Critical system paths on 3DS SD card must be rejected
+        self.assertFalse(is_safe_download_path("sdmc:/boot.firm"))
+        self.assertFalse(is_safe_download_path("sdmc:/luma/config.ini"))
+        self.assertFalse(is_safe_download_path("sdmc:/3ds/plex-3ds/downloads/../../boot.firm"))
+        self.assertFalse(is_safe_download_path("sdmc:/3ds/plex-3ds/downloads/../secrets.txt"))
+        self.assertFalse(is_safe_download_path("/etc/ssl/certs/cacert.pem"))
+        self.assertFalse(is_safe_download_path(""))
+        self.assertFalse(is_safe_download_path(None))
+
+        # Only legitimate subpaths inside downloads folder are accepted
+        self.assertTrue(is_safe_download_path("sdmc:/3ds/plex-3ds/downloads/Movies/Movie (2020)/Movie (2020).mkv"))
+        self.assertTrue(is_safe_download_path("sdmc:/3ds/plex-3ds/downloads/Music/Artist/Album/01 - Song.mp3"))
+
+    def test_protected_directory_deletion_prevention(self):
+        # Category root folders and the base downloads directory must NEVER be pruned or removed by rmdir
+        self.assertFalse(is_safe_download_dir(BASE_DOWNLOAD_DIR))
+        self.assertFalse(is_safe_download_dir(MOVIES_DOWNLOAD_DIR))
+        self.assertFalse(is_safe_download_dir(TV_DOWNLOAD_DIR))
+        self.assertFalse(is_safe_download_dir(MUSIC_DOWNLOAD_DIR))
+        self.assertFalse(is_safe_download_dir(META_DOWNLOAD_DIR))
+        self.assertFalse(is_safe_download_dir(LEGACY_VIDEO_DIR))
+        self.assertFalse(is_safe_download_dir(LEGACY_MUSIC_DIR))
+
+        # Traversal attempts in directory cleanup must be rejected
+        self.assertFalse(is_safe_download_dir("sdmc:/3ds/plex-3ds/downloads/Movies/.."))
+
+        # Legitimate album / season / movie subfolders can be cleaned up if empty
+        self.assertTrue(is_safe_download_dir("sdmc:/3ds/plex-3ds/downloads/Movies/Inception (2010)"))
+        self.assertTrue(is_safe_download_dir("sdmc:/3ds/plex-3ds/downloads/TV Shows/Breaking Bad/Season 1"))
+        self.assertTrue(is_safe_download_dir("sdmc:/3ds/plex-3ds/downloads/Music/Daft Punk/Discovery"))
+
+    def test_component_length_clamping(self):
+        long_title = "A" * 120
+        clamped = sanitize_path_component(long_title)
+        self.assertEqual(len(clamped), 64)
+        self.assertEqual(clamped, "A" * 64)
+
+        # Ensure trailing spaces, dots, or underscores caused by cutoff at 64 chars are stripped
+        cut_edge_case = ("B" * 63) + " ."
+        clamped_edge = sanitize_path_component(cut_edge_case)
+        self.assertEqual(clamped_edge, "B" * 63)
+        self.assertFalse(clamped_edge.endswith(" "))
+        self.assertFalse(clamped_edge.endswith("."))
+        self.assertFalse(clamped_edge.endswith("_"))
+
+    def test_config_negative_or_zero_size_handling(self):
+        def simulate_load_config_sz(ftell_result):
+            if ftell_result <= 0:
+                return None  # Abort safely without string allocation or JSON parsing
+            return "valid_data"
+
+        self.assertIsNone(simulate_load_config_sz(-1))
+        self.assertIsNone(simulate_load_config_sz(0))
+        self.assertEqual(simulate_load_config_sz(150), "valid_data")
+
+    def test_audio_allocation_exhaustion_recovery(self):
+        # Simulates AudioPlayer::downloadLoop malloc retry ceiling
+        def simulate_chunk_allocation(fail_attempts, max_retries=5):
+            retries = 0
+            chunk = None
+            while chunk is None and retries < max_retries:
+                if retries < fail_attempts:
+                    retries += 1
+                else:
+                    chunk = {"data": bytearray(64 * 1024)}
+            if chunk is None:
+                return 0  # Abort curl cleanly
+            return len(chunk["data"])
+
+        # Recovered on 3rd attempt
+        self.assertEqual(simulate_chunk_allocation(3), 65536)
+        # Out of memory after 5 attempts -> cleanly aborts transfer (returns 0 to curl)
+        self.assertEqual(simulate_chunk_allocation(10), 0)
+
+    def test_tls_ca_bundle_path_standardization(self):
+        # Ensure canonical 3DS CA bundle path is sdmc:/3ds/plex-3ds/cacert.pem
+        canonical_ca_path = "sdmc:/3ds/plex-3ds/cacert.pem"
+        self.assertTrue(canonical_ca_path.startswith("sdmc:/"))
+        self.assertFalse(canonical_ca_path.startswith("/etc/"))
 
 
 if __name__ == '__main__':

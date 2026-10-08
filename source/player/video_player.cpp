@@ -228,8 +228,12 @@ void VideoPlayer::downloadLoop() {
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1024L);
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 60L);
 
-    if (access("/etc/ssl/certs/cacert.pem", R_OK) == 0) {
-        curl_easy_setopt(curl, CURLOPT_CAINFO, "/etc/ssl/certs/cacert.pem");
+    static const char* CA_BUNDLE_PATH = "sdmc:/3ds/plex-3ds/cacert.pem";
+    if (access(CA_BUNDLE_PATH, R_OK) == 0 || access("/etc/ssl/certs/cacert.pem", R_OK) == 0) {
+        const char* caPath = (access(CA_BUNDLE_PATH, R_OK) == 0) ? CA_BUNDLE_PATH : "/etc/ssl/certs/cacert.pem";
+        curl_easy_setopt(curl, CURLOPT_CAINFO, caPath);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
     } else {
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
@@ -501,6 +505,11 @@ void VideoPlayer::decodeLoop() {
                         mix[0] = 1.0f;
                         mix[1] = 1.0f;
                         ndspChnSetMix(m_audioChannel, mix);
+                    } else {
+                        // Linear memory allocation failed: disable audio decoding cleanly
+                        avcodec_free_context(&aCodecCtx);
+                        aCodecCtx = nullptr;
+                        audioStreamIdx = -1;
                     }
                 }
             }

@@ -64,6 +64,29 @@ void exit() {
     s_networkInitialized = false;
 }
 
+static void applyTlsOptions(CURL* curl) {
+    static bool s_hasCaBundleChecked = false;
+    static bool s_hasCaBundle = false;
+    static const char* CA_BUNDLE_PATH = "sdmc:/3ds/plex-3ds/cacert.pem";
+    if (!s_hasCaBundleChecked) {
+        FILE* caF = fopen(CA_BUNDLE_PATH, "rb");
+        if (caF) {
+            fclose(caF);
+            s_hasCaBundle = true;
+        }
+        s_hasCaBundleChecked = true;
+    }
+
+    if (s_hasCaBundle) {
+        curl_easy_setopt(curl, CURLOPT_CAINFO, CA_BUNDLE_PATH);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    } else {
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    }
+}
+
 static HttpResponse performCurlRequest(CURL* curl, const std::map<std::string, std::string>& headers) {
     HttpResponse response;
     struct curl_slist* chunk = nullptr;
@@ -82,27 +105,7 @@ static HttpResponse performCurlRequest(CURL* curl, const std::map<std::string, s
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, XferInfoCallback);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
-    // Enable CA certificate verification if bundle is provided on SD, else allow fallback
-    static bool s_hasCaBundleChecked = false;
-    static bool s_hasCaBundle = false;
-    static const char* CA_BUNDLE_PATH = "sdmc:/3ds/plex-3ds/cacert.pem";
-    if (!s_hasCaBundleChecked) {
-        FILE* caF = fopen(CA_BUNDLE_PATH, "rb");
-        if (caF) {
-            fclose(caF);
-            s_hasCaBundle = true;
-        }
-        s_hasCaBundleChecked = true;
-    }
-
-    if (s_hasCaBundle) {
-        curl_easy_setopt(curl, CURLOPT_CAINFO, CA_BUNDLE_PATH);
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
-    } else {
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L); // Fallback for 3DS without root CA bundle
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-    }
+    applyTlsOptions(curl);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 
     CURLcode res = curl_easy_perform(curl);
@@ -180,8 +183,7 @@ bool downloadFile(const std::string& url, const std::string& destinationPath, co
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, XferInfoCallback);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    applyTlsOptions(curl);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 
     CURLcode res = curl_easy_perform(curl);

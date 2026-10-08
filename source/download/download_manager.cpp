@@ -59,7 +59,35 @@ std::string DownloadManager::sanitizePathComponent(const std::string& name) {
         end--;
     }
     if (start >= end) return "Unknown";
-    return safe.substr(start, end - start);
+    std::string result = safe.substr(start, end - start);
+    // Limit individual path components to 64 chars to prevent exceeding FAT32 260-char path limits
+    if (result.length() > 64) {
+        result = result.substr(0, 64);
+        while (!result.empty() && (result.back() == ' ' || result.back() == '.' || result.back() == '_')) {
+            result.pop_back();
+        }
+        if (result.empty()) result = "Unknown";
+    }
+    return result;
+}
+
+static bool isSafeDownloadPath(const std::string& p) {
+    if (p.empty()) return false;
+    if (p.rfind(BASE_DOWNLOAD_DIR + "/", 0) != 0) return false;
+    if (p.find("..") != std::string::npos) return false;
+    struct stat st;
+    return (stat(p.c_str(), &st) == 0 && !S_ISDIR(st.st_mode) && st.st_size > 4096);
+}
+
+static bool isSafeDownloadDir(const std::string& d) {
+    if (d.empty()) return false;
+    if (d.rfind(BASE_DOWNLOAD_DIR + "/", 0) != 0) return false;
+    if (d.find("..") != std::string::npos) return false;
+    if (d == MOVIES_DOWNLOAD_DIR || d == TV_DOWNLOAD_DIR || d == MUSIC_DOWNLOAD_DIR ||
+        d == META_DOWNLOAD_DIR || d == LEGACY_VIDEO_DIR || d == LEGACY_MUSIC_DIR || d == BASE_DOWNLOAD_DIR) {
+        return false;
+    }
+    return true;
 }
 
 static void createDirectories(const std::string& dirPath) {
@@ -223,26 +251,20 @@ std::string DownloadManager::getLocalFilePath(const std::string& ratingKey) cons
         fclose(f);
     }
 
-    auto isFileValid = [](const std::string& p) -> bool {
-        if (p.empty()) return false;
-        struct stat st;
-        return (stat(p.c_str(), &st) == 0 && !S_ISDIR(st.st_mode) && st.st_size > 4096);
-    };
-
-    if (isFileValid(path)) return path;
+    if (isSafeDownloadPath(path)) return path;
 
     std::string cand1 = MUSIC_DOWNLOAD_DIR + "/" + safeKey + ".mp3";
     std::string cand2 = LEGACY_VIDEO_DIR + "/" + safeKey + ".mkv";
     std::string cand3 = LEGACY_MUSIC_DIR + "/" + safeKey + ".mp3";
     std::string cand4 = BASE_DOWNLOAD_DIR + "/" + safeKey + ".mp3";
     std::string cand5 = BASE_DOWNLOAD_DIR + "/" + safeKey + ".mkv";
-    if (isFileValid(cand1)) return cand1;
-    if (isFileValid(cand2)) return cand2;
-    if (isFileValid(cand3)) return cand3;
-    if (isFileValid(cand4)) return cand4;
-    if (isFileValid(cand5)) return cand5;
+    if (isSafeDownloadPath(cand1)) return cand1;
+    if (isSafeDownloadPath(cand2)) return cand2;
+    if (isSafeDownloadPath(cand3)) return cand3;
+    if (isSafeDownloadPath(cand4)) return cand4;
+    if (isSafeDownloadPath(cand5)) return cand5;
 
-    return path;
+    return "";
 }
 
 std::vector<PlexMediaItem> DownloadManager::getDownloadedItems() {
@@ -447,17 +469,21 @@ bool DownloadManager::deleteDownload(const std::string& ratingKey) {
     std::string metaPath = META_DOWNLOAD_DIR + "/" + safeKey + ".json";
     std::string localPath = getLocalFilePath(ratingKey);
 
-    if (!localPath.empty()) {
+    if (!localPath.empty() && isSafeDownloadPath(localPath)) {
         remove(localPath.c_str());
         // Clean up empty parent folder (e.g. Season or Album) and grandparent folder (e.g. Show or Artist)
         size_t lastSlash = localPath.rfind('/');
         if (lastSlash != std::string::npos) {
             std::string parentDir = localPath.substr(0, lastSlash);
-            rmdir(parentDir.c_str());
-            size_t prevSlash = parentDir.rfind('/');
-            if (prevSlash != std::string::npos) {
-                std::string gpDir = parentDir.substr(0, prevSlash);
-                rmdir(gpDir.c_str());
+            if (isSafeDownloadDir(parentDir)) {
+                rmdir(parentDir.c_str());
+                size_t prevSlash = parentDir.rfind('/');
+                if (prevSlash != std::string::npos) {
+                    std::string gpDir = parentDir.substr(0, prevSlash);
+                    if (isSafeDownloadDir(gpDir)) {
+                        rmdir(gpDir.c_str());
+                    }
+                }
             }
         }
     }

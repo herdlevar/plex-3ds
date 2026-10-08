@@ -185,6 +185,10 @@ static void loadResume() {
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
     fseek(f, 0, SEEK_SET);
+    if (sz <= 0) {
+        fclose(f);
+        return;
+    }
     std::string content(sz, '\0');
     fread(&content[0], 1, sz, f);
     fclose(f);
@@ -837,6 +841,11 @@ static void loadConfig() {
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
+
+    if (size <= 0) {
+        fclose(f);
+        return;
+    }
 
     std::string content(size, '\0');
     fread(&content[0], 1, size, f);
