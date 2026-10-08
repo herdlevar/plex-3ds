@@ -161,16 +161,10 @@ void DownloadManager::exit() {
 
 bool DownloadManager::isDownloaded(const std::string& ratingKey) const {
     if (ratingKey.empty()) return false;
-    std::string safeKey = sanitizeKey(ratingKey);
-    std::string metaPath = META_DOWNLOAD_DIR + "/" + safeKey + ".json";
-    FILE* f = fopen(metaPath.c_str(), "rb");
-    if (!f) return false;
-    fclose(f);
-
     std::string lp = getLocalFilePath(ratingKey);
     if (lp.empty()) return false;
     struct stat st;
-    if (stat(lp.c_str(), &st) != 0 || st.st_size < 4096) {
+    if (stat(lp.c_str(), &st) != 0 || S_ISDIR(st.st_mode) || st.st_size < 4096) {
         return false;
     }
     return true;
@@ -181,23 +175,44 @@ std::string DownloadManager::getLocalFilePath(const std::string& ratingKey) cons
     std::string safeKey = sanitizeKey(ratingKey);
     std::string metaPath = META_DOWNLOAD_DIR + "/" + safeKey + ".json";
     FILE* f = fopen(metaPath.c_str(), "rb");
-    if (!f) return "";
-
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-
-    std::string content(sz, '\0');
-    fread(&content[0], 1, sz, f);
-    fclose(f);
-
     std::string path = "";
-    cJSON* root = cJSON_Parse(content.c_str());
-    if (root) {
-        cJSON* p = cJSON_GetObjectItem(root, "localPath");
-        if (p && p->valuestring) path = p->valuestring;
-        cJSON_Delete(root);
+    if (f) {
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        fseek(f, 0, SEEK_SET);
+
+        if (sz > 0) {
+            std::string content(sz, '\0');
+            fread(&content[0], 1, sz, f);
+            cJSON* root = cJSON_Parse(content.c_str());
+            if (root) {
+                cJSON* p = cJSON_GetObjectItem(root, "localPath");
+                if (p && p->valuestring) path = p->valuestring;
+                cJSON_Delete(root);
+            }
+        }
+        fclose(f);
     }
+
+    auto isFileValid = [](const std::string& p) -> bool {
+        if (p.empty()) return false;
+        struct stat st;
+        return (stat(p.c_str(), &st) == 0 && !S_ISDIR(st.st_mode) && st.st_size > 4096);
+    };
+
+    if (isFileValid(path)) return path;
+
+    std::string cand1 = MUSIC_DOWNLOAD_DIR + "/" + safeKey + ".mp3";
+    std::string cand2 = LEGACY_VIDEO_DIR + "/" + safeKey + ".mkv";
+    std::string cand3 = LEGACY_MUSIC_DIR + "/" + safeKey + ".mp3";
+    std::string cand4 = BASE_DOWNLOAD_DIR + "/" + safeKey + ".mp3";
+    std::string cand5 = BASE_DOWNLOAD_DIR + "/" + safeKey + ".mkv";
+    if (isFileValid(cand1)) return cand1;
+    if (isFileValid(cand2)) return cand2;
+    if (isFileValid(cand3)) return cand3;
+    if (isFileValid(cand4)) return cand4;
+    if (isFileValid(cand5)) return cand5;
+
     return path;
 }
 
@@ -239,7 +254,7 @@ std::vector<PlexMediaItem> DownloadManager::getDownloadedItems() {
                 auto isFileValid = [](const std::string& path) -> bool {
                     if (path.empty()) return false;
                     struct stat st;
-                    return (stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 4096);
+                    return (stat(path.c_str(), &st) == 0 && !S_ISDIR(st.st_mode) && st.st_size > 4096);
                 };
 
                 std::string lp = (localPath && localPath->valuestring) ? localPath->valuestring : "";

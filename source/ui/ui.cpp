@@ -211,7 +211,12 @@ void UIRenderer::renderTopScreen(AppState state,
             int elapsed = videoPlayer->getElapsedConnectSec();
             int64_t kb = videoPlayer->getBytesReceived() / 1024;
 
-            if (kb == 0) {
+            if (videoPlayer->isLocalFile()) {
+                std::string statusLine = videoPlayer->getStatusMessage();
+                drawText(20, 96, 0.5f, COLOR_WHITE, statusLine + " " + std::string(spin));
+                drawText(20, 122, 0.45f, COLOR_PLEX_ORANGE, "Loading offline video from SD card...");
+                drawText(20, 146, 0.42f, COLOR_GRAY, "Initializing hardware video player...");
+            } else if (kb == 0) {
                 std::string statusLine = videoPlayer->getStatusMessage();
                 if (statusLine == "Connecting to Plex transcode server..." || statusLine == "Buffering stream from Plex...") {
                     statusLine = "Connecting to Plex transcoder " + std::string(spin) + " (" + std::to_string(elapsed) + "s)";

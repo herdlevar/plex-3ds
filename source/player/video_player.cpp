@@ -59,6 +59,39 @@ static int readPacketCallback(void* opaque, uint8_t* buf, int bufSize) {
     return self->readStream(buf, bufSize);
 }
 
+static int readLocalFileCallback(void* opaque, uint8_t* buf, int bufSize) {
+    FILE* f = static_cast<FILE*>(opaque);
+    if (!f) return AVERROR(EINVAL);
+    size_t r = fread(buf, 1, bufSize, f);
+    if (r == 0) {
+        if (feof(f)) return AVERROR_EOF;
+        return AVERROR(EIO);
+    }
+    return (int)r;
+}
+
+static int64_t seekLocalFileCallback(void* opaque, int64_t offset, int whence) {
+    FILE* f = static_cast<FILE*>(opaque);
+    if (!f) return -1;
+    if (whence & AVSEEK_SIZE) {
+        long cur = ftell(f);
+        if (cur < 0) return -1;
+        if (fseek(f, 0, SEEK_END) != 0) return -1;
+        long sz = ftell(f);
+        fseek(f, cur, SEEK_SET);
+        return (int64_t)sz;
+    }
+    whence &= ~AVSEEK_FORCE;
+    if (whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END) {
+        return -1;
+    }
+    if (fseek(f, (long)offset, whence) != 0) {
+        return -1;
+    }
+    long pos = ftell(f);
+    return (pos < 0) ? -1 : (int64_t)pos;
+}
+
 VideoPlayer::VideoPlayer() {}
 
 VideoPlayer::~VideoPlayer() {
@@ -226,11 +259,57 @@ void VideoPlayer::decodeLoop() {
     AVFormatContext* fmtCtx = nullptr;
     AVIOContext* avioCtx = nullptr;
     unsigned char* avioBuf = nullptr;
+    FILE* localFile = nullptr;
 
     if (m_isLocalFile.load()) {
         m_statusMsg = "Opening local video...";
-        if (avformat_open_input(&fmtCtx, m_currentUrl.c_str(), NULL, NULL) < 0) {
-            m_statusMsg = "Failed to open local video";
+        localFile = fopen(m_currentUrl.c_str(), "rb");
+        if (!localFile) {
+            m_statusMsg = "Failed to open local file";
+            m_isPlaying = false;
+            return;
+        }
+
+        const size_t LOCAL_AVIO_BUF_SIZE = 64 * 1024;
+        avioBuf = (unsigned char*)av_malloc(LOCAL_AVIO_BUF_SIZE);
+        if (!avioBuf) {
+            fclose(localFile);
+            m_statusMsg = "Out of memory (avio)";
+            m_isPlaying = false;
+            return;
+        }
+
+        avioCtx = avio_alloc_context(avioBuf, LOCAL_AVIO_BUF_SIZE, 0, localFile, readLocalFileCallback, NULL, seekLocalFileCallback);
+        if (!avioCtx) {
+            av_free(avioBuf);
+            fclose(localFile);
+            m_statusMsg = "Failed to allocate AVIO";
+            m_isPlaying = false;
+            return;
+        }
+
+        fmtCtx = avformat_alloc_context();
+        if (!fmtCtx) {
+            avio_context_free(&avioCtx);
+            fclose(localFile);
+            m_statusMsg = "Failed to allocate format context";
+            m_isPlaying = false;
+            return;
+        }
+        fmtCtx->pb = avioCtx;
+        fmtCtx->flags |= AVFMT_FLAG_CUSTOM_IO;
+
+        std::string pseudoFilename = "file.mkv";
+        size_t dotPos = m_currentUrl.rfind('.');
+        if (dotPos != std::string::npos) {
+            pseudoFilename = "file" + m_currentUrl.substr(dotPos);
+        }
+
+        if (avformat_open_input(&fmtCtx, pseudoFilename.c_str(), NULL, NULL) < 0) {
+            m_statusMsg = "Failed to parse local video";
+            if (fmtCtx) avformat_close_input(&fmtCtx);
+            avio_context_free(&avioCtx);
+            fclose(localFile);
             m_isPlaying = false;
             return;
         }
@@ -298,17 +377,13 @@ void VideoPlayer::decodeLoop() {
         m_statusMsg = "Failed to find stream info";
         avformat_close_input(&fmtCtx);
         if (avioCtx) avio_context_free(&avioCtx);
+        if (localFile) fclose(localFile);
         m_isPlaying = false;
         return;
     }
 
     if (fmtCtx->duration > 0 && m_durationMs.load() == 0) {
         m_durationMs = (fmtCtx->duration * 1000) / AV_TIME_BASE;
-    }
-
-    if (m_isLocalFile.load() && m_initialOffsetMs.load() > 0) {
-        int64_t targetTimestamp = (m_initialOffsetMs.load() * AV_TIME_BASE) / 1000;
-        av_seek_frame(fmtCtx, -1, targetTimestamp, AVSEEK_FLAG_BACKWARD);
     }
 
     int videoStreamIdx = -1;
@@ -324,9 +399,23 @@ void VideoPlayer::decodeLoop() {
     if (videoStreamIdx == -1) {
         m_statusMsg = "No video stream found in stream";
         avformat_close_input(&fmtCtx);
-        avio_context_free(&avioCtx);
+        if (avioCtx) avio_context_free(&avioCtx);
+        if (localFile) fclose(localFile);
         m_isPlaying = false;
         return;
+    }
+
+    if (m_isLocalFile.load()) {
+        if (m_initialOffsetMs.load() > 0) {
+            int64_t pts = av_rescale_q(m_initialOffsetMs.load(), (AVRational){1, 1000}, fmtCtx->streams[videoStreamIdx]->time_base);
+            if (av_seek_frame(fmtCtx, videoStreamIdx, pts, AVSEEK_FLAG_BACKWARD) < 0) {
+                av_seek_frame(fmtCtx, -1, (m_initialOffsetMs.load() * AV_TIME_BASE) / 1000, AVSEEK_FLAG_BACKWARD);
+            }
+        } else {
+            if (av_seek_frame(fmtCtx, -1, 0, AVSEEK_FLAG_BACKWARD) < 0) {
+                av_seek_frame(fmtCtx, -1, 0, AVSEEK_FLAG_ANY);
+            }
+        }
     }
 
     AVCodecParameters* codecPar = fmtCtx->streams[videoStreamIdx]->codecpar;
@@ -334,7 +423,8 @@ void VideoPlayer::decodeLoop() {
     if (!decoder) {
         m_statusMsg = "H.264 decoder not available";
         avformat_close_input(&fmtCtx);
-        avio_context_free(&avioCtx);
+        if (avioCtx) avio_context_free(&avioCtx);
+        if (localFile) fclose(localFile);
         m_isPlaying = false;
         return;
     }
@@ -342,7 +432,8 @@ void VideoPlayer::decodeLoop() {
     AVCodecContext* codecCtx = avcodec_alloc_context3(decoder);
     if (!codecCtx) {
         avformat_close_input(&fmtCtx);
-        avio_context_free(&avioCtx);
+        if (avioCtx) avio_context_free(&avioCtx);
+        if (localFile) fclose(localFile);
         m_isPlaying = false;
         return;
     }
@@ -350,7 +441,8 @@ void VideoPlayer::decodeLoop() {
     if (avcodec_parameters_to_context(codecCtx, codecPar) < 0) {
         avcodec_free_context(&codecCtx);
         avformat_close_input(&fmtCtx);
-        avio_context_free(&avioCtx);
+        if (avioCtx) avio_context_free(&avioCtx);
+        if (localFile) fclose(localFile);
         m_isPlaying = false;
         return;
     }
@@ -363,7 +455,8 @@ void VideoPlayer::decodeLoop() {
         m_statusMsg = "Failed to open H.264 decoder";
         avcodec_free_context(&codecCtx);
         avformat_close_input(&fmtCtx);
-        avio_context_free(&avioCtx);
+        if (avioCtx) avio_context_free(&avioCtx);
+        if (localFile) fclose(localFile);
         m_isPlaying = false;
         return;
     }
@@ -434,7 +527,8 @@ void VideoPlayer::decodeLoop() {
         if (swrCtx) swr_free(&swrCtx);
         if (audioPcmPool) linearFree(audioPcmPool);
         avformat_close_input(&fmtCtx);
-        avio_context_free(&avioCtx);
+        if (avioCtx) avio_context_free(&avioCtx);
+        if (localFile) fclose(localFile);
         m_isPlaying = false;
         return;
     }
@@ -502,8 +596,8 @@ void VideoPlayer::decodeLoop() {
 
         int ret = av_read_frame(fmtCtx, pkt);
         if (ret < 0) {
-            if (m_downloadFinished.load() && m_ringSize.load() == 0) {
-                break; // Stream ended
+            if (m_isLocalFile.load() || (m_downloadFinished.load() && m_ringSize.load() == 0)) {
+                break; // Stream or local file ended
             }
             svcSleepThread(5000000); // 5ms
             continue;
@@ -661,6 +755,10 @@ void VideoPlayer::decodeLoop() {
     avcodec_free_context(&codecCtx);
     avformat_close_input(&fmtCtx);
     if (avioCtx) avio_context_free(&avioCtx);
+    if (localFile) {
+        fclose(localFile);
+        localFile = nullptr;
+    }
     m_isPlaying = false;
 }
 #endif

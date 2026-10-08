@@ -1437,7 +1437,9 @@ int main(int argc, char* argv[]) {
                 for (auto& it : g_items) {
                     if (g_downloadManager.isDownloaded(it.ratingKey)) {
                         it.isOffline = true;
-                        it.localFilePath = g_downloadManager.getLocalFilePath(it.ratingKey);
+                        if (it.localFilePath.empty()) {
+                            it.localFilePath = g_downloadManager.getLocalFilePath(it.ratingKey);
+                        }
                     }
                 }
             }
@@ -1452,7 +1454,9 @@ int main(int argc, char* argv[]) {
                     for (auto& it : g_items) {
                         if (it.ratingKey == dlProg.ratingKey) {
                             it.isOffline = true;
-                            it.localFilePath = g_downloadManager.getLocalFilePath(it.ratingKey);
+                            if (it.localFilePath.empty()) {
+                                it.localFilePath = g_downloadManager.getLocalFilePath(it.ratingKey);
+                            }
                         }
                     }
                 }
@@ -2063,7 +2067,9 @@ int main(int argc, char* argv[]) {
                         for (auto& item : g_items) {
                             if (g_downloadManager.isDownloaded(item.ratingKey)) {
                                 item.isOffline = true;
-                                item.localFilePath = g_downloadManager.getLocalFilePath(item.ratingKey);
+                                if (item.localFilePath.empty()) {
+                                    item.localFilePath = g_downloadManager.getLocalFilePath(item.ratingKey);
+                                }
                             }
                             if (g_resumeMap.count(item.ratingKey)) {
                                 item.viewOffsetMs = std::max(item.viewOffsetMs, g_resumeMap[item.ratingKey]);
@@ -2164,7 +2170,9 @@ int main(int argc, char* argv[]) {
                         for (auto& it : moreItems) {
                             if (g_downloadManager.isDownloaded(it.ratingKey)) {
                                 it.isOffline = true;
-                                it.localFilePath = g_downloadManager.getLocalFilePath(it.ratingKey);
+                                if (it.localFilePath.empty()) {
+                                    it.localFilePath = g_downloadManager.getLocalFilePath(it.ratingKey);
+                                }
                             }
                             if (g_resumeMap.count(it.ratingKey)) {
                                 it.viewOffsetMs = std::max(it.viewOffsetMs, g_resumeMap[it.ratingKey]);
@@ -2211,7 +2219,9 @@ int main(int argc, char* argv[]) {
                             for (auto& it : newItems) {
                                 if (g_downloadManager.isDownloaded(it.ratingKey)) {
                                     it.isOffline = true;
-                                    it.localFilePath = g_downloadManager.getLocalFilePath(it.ratingKey);
+                                    if (it.localFilePath.empty()) {
+                                        it.localFilePath = g_downloadManager.getLocalFilePath(it.ratingKey);
+                                    }
                                 }
                                 if (g_resumeMap.count(it.ratingKey)) {
                                     it.viewOffsetMs = std::max(it.viewOffsetMs, g_resumeMap[it.ratingKey]);
@@ -2408,7 +2418,9 @@ int main(int argc, char* argv[]) {
                 g_playlistIndex = g_selectedItemIdx;
                 if (isItemDownloaded) {
                     curItem.isOffline = true;
-                    curItem.localFilePath = g_downloadManager.getLocalFilePath(curItem.ratingKey);
+                    if (curItem.localFilePath.empty()) {
+                        curItem.localFilePath = g_downloadManager.getLocalFilePath(curItem.ratingKey);
+                    }
                 }
 
                 int64_t startOffset = 0;
