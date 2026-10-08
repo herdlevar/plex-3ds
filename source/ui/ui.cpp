@@ -585,6 +585,8 @@ void UIRenderer::renderBottomScreen(AppState state,
                 label = "[Show] " + items[itemIdx].title;
             } else if (items[itemIdx].type == MediaType::SEASON) {
                 label = "[Season] " + items[itemIdx].title;
+            } else if (items[itemIdx].type == MediaType::ARTIST) {
+                label = "[Artist] " + items[itemIdx].title;
             }
             if (items[itemIdx].isOffline && !isMediaContainer(items[itemIdx].type) && listTitle != "Downloads" && listTitle.rfind("Downloaded", 0) != 0 && items[itemIdx].key.rfind("__offline", 0) != 0) {
                 label = "[DL] " + label;

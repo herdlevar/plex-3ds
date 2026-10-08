@@ -236,34 +236,28 @@ std::vector<PlexMediaItem> DownloadManager::getDownloadedItems() {
                 cJSON* year = cJSON_GetObjectItem(root, "year");
                 cJSON* index = cJSON_GetObjectItem(root, "index");
 
+                auto isFileValid = [](const std::string& path) -> bool {
+                    if (path.empty()) return false;
+                    struct stat st;
+                    return (stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 4096);
+                };
+
                 std::string lp = (localPath && localPath->valuestring) ? localPath->valuestring : "";
-                if (lp.empty() || access(lp.c_str(), R_OK) != 0) {
+                if (lp.empty() || !isFileValid(lp)) {
                     std::string keyBase = fname.substr(0, fname.length() - 5);
                     std::string cand1 = MUSIC_DOWNLOAD_DIR + "/" + keyBase + ".mp3";
                     std::string cand2 = LEGACY_VIDEO_DIR + "/" + keyBase + ".mkv";
                     std::string cand3 = LEGACY_MUSIC_DIR + "/" + keyBase + ".mp3";
                     std::string cand4 = BASE_DOWNLOAD_DIR + "/" + keyBase + ".mp3";
                     std::string cand5 = BASE_DOWNLOAD_DIR + "/" + keyBase + ".mkv";
-                    if (access(cand1.c_str(), R_OK) == 0) lp = cand1;
-                    else if (access(cand2.c_str(), R_OK) == 0) lp = cand2;
-                    else if (access(cand3.c_str(), R_OK) == 0) lp = cand3;
-                    else if (access(cand4.c_str(), R_OK) == 0) lp = cand4;
-                    else if (access(cand5.c_str(), R_OK) == 0) lp = cand5;
+                    if (isFileValid(cand1)) lp = cand1;
+                    else if (isFileValid(cand2)) lp = cand2;
+                    else if (isFileValid(cand3)) lp = cand3;
+                    else if (isFileValid(cand4)) lp = cand4;
+                    else if (isFileValid(cand5)) lp = cand5;
                 }
 
-                // Verify local media file exists and has valid content (> 4KB)
-                FILE* mediaFile = fopen(lp.c_str(), "rb");
-                if (mediaFile) {
-                    fseek(mediaFile, 0, SEEK_END);
-                    long actualSz = ftell(mediaFile);
-                    fclose(mediaFile);
-                    if (actualSz < 4096) {
-                        // Purge corrupt / 0-byte download file and metadata
-                        remove(lp.c_str());
-                        remove(metaPath.c_str());
-                        cJSON_Delete(root);
-                        continue;
-                    }
+                if (isFileValid(lp)) {
 
                     PlexMediaItem it;
                     if (rk && rk->valuestring) it.ratingKey = rk->valuestring;
