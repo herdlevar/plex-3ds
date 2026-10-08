@@ -175,5 +175,46 @@ class TestPlex3DSDownloadQueue(unittest.TestCase):
         self.assertEqual(format_badge(3, 12, 78), "DL (3/12): 78%")
 
 
+class TestPlex3DSClamshellPolicy(unittest.TestCase):
+    def evaluate_clamshell_state(self, is_media_active, media_type, is_paused, headphones_connected):
+        is_playing_music = is_media_active and media_type == "track" and not is_paused
+        can_clamshell_play = is_playing_music and headphones_connected
+        sleep_allowed = not can_clamshell_play
+        return can_clamshell_play, sleep_allowed
+
+    def test_music_with_headphones_allows_clamshell(self):
+        can_play, sleep_allowed = self.evaluate_clamshell_state(True, "track", False, True)
+        self.assertTrue(can_play)
+        self.assertFalse(sleep_allowed)
+
+    def test_music_without_headphones_disallows_clamshell(self):
+        can_play, sleep_allowed = self.evaluate_clamshell_state(True, "track", False, False)
+        self.assertFalse(can_play)
+        self.assertTrue(sleep_allowed)
+
+    def test_video_never_allows_clamshell_even_with_headphones(self):
+        can_play, sleep_allowed = self.evaluate_clamshell_state(True, "video", False, True)
+        self.assertFalse(can_play)
+        self.assertTrue(sleep_allowed)
+
+    def test_paused_music_disallows_clamshell(self):
+        can_play, sleep_allowed = self.evaluate_clamshell_state(True, "track", True, True)
+        self.assertFalse(can_play)
+        self.assertTrue(sleep_allowed)
+
+    def test_headphone_disconnect_detection(self):
+        def on_headphone_transition(prev_connected, cur_connected, is_playing):
+            unplugged = prev_connected and not cur_connected
+            should_pause = unplugged and is_playing
+            return should_pause
+
+        self.assertTrue(on_headphone_transition(True, False, True))
+        self.assertFalse(on_headphone_transition(False, False, True))
+        self.assertFalse(on_headphone_transition(True, True, True))
+        self.assertFalse(on_headphone_transition(False, True, True))
+        self.assertFalse(on_headphone_transition(True, False, False))
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+

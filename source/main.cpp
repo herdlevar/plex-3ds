@@ -70,10 +70,19 @@ static uint64_t s_lastUserActivityTime = 0;
 static bool s_ignoringTouchUntilRelease = false;
 
 static bool s_shellClosed = false;
-static bool s_lastHeadphoneStatus = true;
+static bool s_lastHeadphoneStatus = false;
 
 static AudioPlayer* g_pAudioPlayer = nullptr;
 static VideoPlayer* g_pVideoPlayer = nullptr;
+
+static inline bool isHeadphoneConnected() {
+    bool inserted = false;
+    if (R_SUCCEEDED(DSP_GetHeadphoneStatus(&inserted))) {
+        s_lastHeadphoneStatus = inserted;
+        return inserted;
+    }
+    return s_lastHeadphoneStatus;
+}
 
 static void onAptHook(APT_HookType hook, void* param) {
     (void)param;
@@ -96,13 +105,12 @@ static void onAptHook(APT_HookType hook, void* param) {
             break;
 
         case APTHOOK_ONSLEEP:
-            // If actively playing music, keep playing through headphones! Do not mute or pause.
-            if (g_pAudioPlayer && g_pAudioPlayer->isPlaying() && !g_pAudioPlayer->isPaused()) {
-                ndspSetMasterVol(1.0f);
-                break;
-            }
             g_gpuRightLost = true;
             g_isSuspended = true;
+            if (s_bottomScreenOff) {
+                s_bottomScreenOff = false;
+                GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_BOTTOM);
+            }
             if (g_pVideoPlayer && g_pVideoPlayer->isPlaying() && !g_pVideoPlayer->isPaused()) {
                 g_videoWasPlayingOnSuspend = true;
                 g_pVideoPlayer->pause();
@@ -117,6 +125,9 @@ static void onAptHook(APT_HookType hook, void* param) {
         case APTHOOK_ONWAKEUP:
             g_gpuRightLost = false;
             ndspSetMasterVol(1.0f);
+            s_bottomScreenOff = false;
+            GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_TOP);
+            GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_BOTTOM);
             if (g_videoWasPlayingOnSuspend && g_pVideoPlayer) {
                 g_pVideoPlayer->resume();
                 g_videoWasPlayingOnSuspend = false;
@@ -128,7 +139,10 @@ static void onAptHook(APT_HookType hook, void* param) {
             s_shellClosed = false;
             s_lastUserActivityTime = osGetTime();
             g_isSuspended = false;
-            aptSetSleepAllowed(!(g_pAudioPlayer && g_pAudioPlayer->isPlaying() && !g_pAudioPlayer->isPaused()));
+            {
+                bool canClamshell = (g_pAudioPlayer && g_pAudioPlayer->isPlaying() && !g_pAudioPlayer->isPaused()) && isHeadphoneConnected();
+                aptSetSleepAllowed(!canClamshell);
+            }
             break;
 
         case APTHOOK_ONEXIT:
@@ -329,8 +343,8 @@ static void playMediaItem(const PlexMediaItem& item, AudioPlayer& audioPlayer, V
 #ifdef __3DS__
         // Maintain 804MHz speedup during audio playback for stutter-free MP3/AAC decoding & TLS decryption
         osSetSpeedupEnable(true);
-        // Disallow hardware sleep so music playback continues when clamshell lid is closed
-        aptSetSleepAllowed(false);
+        // Disallow hardware sleep for clamshell playback only if headphones connected
+        aptSetSleepAllowed(!isHeadphoneConnected());
 #endif
         audioPlayer.play(playUrl, (int)(item.durationMs / 1000));
         if (startOffsetMs > 0) {
@@ -861,8 +875,30 @@ int main(int argc, char* argv[]) {
                                audioPlayer.isPlaying() && !audioPlayer.isPaused());
 
 #ifdef __3DS__
-        // Allow sleep mode unless actively playing music
-        aptSetSleepAllowed(!isPlayingMusic);
+        bool headphonePlugged = isHeadphoneConnected();
+        static bool s_prevHeadphonePlugged = s_lastHeadphoneStatus;
+        if (s_prevHeadphonePlugged && !headphonePlugged) {
+            // Headphones unplugged during active playback
+            if (isCurrentlyPlayingMedia) {
+                if (g_nowPlayingItem.type == MediaType::TRACK) {
+                    audioPlayer.pause();
+                } else {
+                    videoPlayer.pause();
+                }
+                g_statusMsg = "Paused (headphones disconnected)";
+            }
+        }
+        s_prevHeadphonePlugged = headphonePlugged;
+
+        // Recheck isPlayingMusic in case unplugging paused playback
+        isPlayingMusic = (g_hasNowPlaying && g_nowPlayingItem.type == MediaType::TRACK &&
+                          audioPlayer.isPlaying() && !audioPlayer.isPaused());
+
+        // Clamshell playback is ONLY allowed if actively playing music AND headphones are plugged in!
+        bool canClamshellPlay = isPlayingMusic && headphonePlugged;
+
+        // Allow sleep mode unless actively playing music through headphones
+        aptSetSleepAllowed(!canClamshellPlay);
 
         // Check clamshell state via PTMU
         u8 shellState = 1;
@@ -879,18 +915,40 @@ int main(int argc, char* argv[]) {
                     GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_TOP);
                     GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_BOTTOM);
                     s_lastUserActivityTime = osGetTime();
+                    // If audio was paused because shell was closed without headphones, resume!
+                    if (g_audioWasPlayingOnSuspend) {
+                        audioPlayer.resume();
+                        g_audioWasPlayingOnSuspend = false;
+                    }
                 }
             }
         }
 
-        // If shell is closed and we are NOT playing music (e.g. paused/stopped/video), sleep immediately
-        if (s_shellClosed && !isPlayingMusic) {
+        // If shell is closed and we cannot do clamshell playback (e.g. no headphones, or paused/stopped/video), sleep immediately
+        if (s_shellClosed && !canClamshellPlay) {
+            if (isPlayingMusic) {
+                g_audioWasPlayingOnSuspend = true;
+                audioPlayer.pause();
+            }
             aptSetSleepAllowed(true);
             APT_SleepIfShellClosed();
+            continue;
         }
 
-        if (s_shellClosed) {
-            // Clamshell is closed during music playback:
+        if (s_shellClosed && canClamshellPlay) {
+            // Clamshell is closed during music playback with headphones connected:
+            // Check if headphones were unplugged while lid was closed!
+            if (!isHeadphoneConnected()) {
+                // Headphones unplugged while lid was closed: pause and put console to sleep!
+                audioPlayer.pause();
+                g_audioWasPlayingOnSuspend = false; // Keep paused on wake so speakers don't blast
+                g_statusMsg = "Paused (headphones disconnected)";
+                s_prevHeadphonePlugged = false;
+                aptSetSleepAllowed(true);
+                APT_SleepIfShellClosed();
+                continue;
+            }
+
             // Physical shoulder buttons (L/R) remain functional for track skipping!
             // Pressing START or L+R toggles play/pause with lid closed!
             if ((kDown & KEY_START) || ((kHeld & KEY_L) && (kDown & KEY_R))) {
@@ -914,6 +972,7 @@ int main(int argc, char* argv[]) {
                     g_controlsExpanded = false;
                     aptSetSleepAllowed(true);
                     APT_SleepIfShellClosed();
+                    continue;
                 }
             }
 
