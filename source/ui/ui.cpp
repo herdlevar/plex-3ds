@@ -519,9 +519,9 @@ void UIRenderer::renderBottomScreen(AppState state,
         drawButton(114, btnY1, 92, btnH, "Sync (Y)");
         drawButton(213, btnY1, 92, btnH, "Remove (X)");
 
-        // Row 2 Action buttons: [Downloads (L)] and [Account: ...]
+        // Row 2 Action buttons: [Downloads (B)] and [Account: ...]
         float btnY2 = hasNowPlaying ? 128.0f : 168.0f;
-        drawButton(15, btnY2, 135, btnH, "Downloads (L)", false);
+        drawButton(15, btnY2, 135, btnH, "Downloads (B)", false);
 
         std::string acctLabel;
         if (isLoggedIn && !username.empty()) {
@@ -535,7 +535,7 @@ void UIRenderer::renderBottomScreen(AppState state,
         drawButton(155, btnY2, 150, btnH, "Account: " + acctLabel, false);
 
         if (!hasNowPlaying) {
-            drawText(15, 214, 0.38f, COLOR_GRAY, "(A) Connect  (L) Downloads  (X) Del  (Y) Sync  (Sel) Acct");
+            drawText(15, 214, 0.38f, COLOR_GRAY, "(A) Connect  (B) Downloads  (X) Del  (Y) Sync  (Sel) Acct");
         }
     } else if (state == AppState::LIBRARY_LIST) {
         drawHeader("SECTIONS", 320);

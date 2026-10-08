@@ -1623,7 +1623,7 @@ int main(int argc, char* argv[]) {
                     }
                 }
             }
-            if (kDown & KEY_L) {
+            if (kDown & KEY_B) {
                 openDownloadsView(ui);
             }
             if (kDown & KEY_SELECT) {
@@ -1668,7 +1668,7 @@ int main(int argc, char* argv[]) {
                     g_scrollOffset = 0;
                     g_statusMsg = "Connected to " + srv.name;
                 } else {
-                    g_statusMsg = "Failed to connect to " + srv.name + " (Press L for Downloads)";
+                    g_statusMsg = "Failed to connect to " + srv.name + " (Press B for Downloads)";
                 }
             }
         } else if (g_state == AppState::LIBRARY_LIST) {
