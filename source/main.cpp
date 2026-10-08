@@ -17,6 +17,7 @@
 #include <set>
 #include <memory>
 #include <algorithm>
+#include <functional>
 
 static AppConfig g_config;
 static AppState g_state = AppState::PIN_AUTH;
@@ -56,6 +57,19 @@ static std::vector<PlexMediaItem> g_playlistItems;
 static int g_playlistIndex = -1;
 
 static DownloadManager g_downloadManager;
+ 
+struct ConfirmDialogState {
+    bool active = false;
+    std::string title;
+    std::string prompt;
+    std::string itemTitle;
+    std::string warning;
+    std::string confirmLabel = "Delete (A)";
+    std::string cancelLabel = "Cancel (B)";
+    std::function<void()> onConfirm;
+    std::function<void()> onCancel;
+};
+static ConfirmDialogState g_confirmDialog;
 
 std::atomic<bool> g_appExiting{false};
 std::atomic<bool> g_isSuspended{false};
@@ -1403,9 +1417,16 @@ int main(int argc, char* argv[]) {
             s_downHoldFrames = 0;
         }
 
-        // Exit immediately on START
+        // Exit immediately on START (or cancel confirm dialog if active)
         if (kDown & KEY_START) {
-            break;
+            if (g_confirmDialog.active) {
+                auto cb = g_confirmDialog.onCancel;
+                g_confirmDialog.active = false;
+                if (cb) cb();
+                kDown &= ~KEY_START;
+            } else {
+                break;
+            }
         }
 
         // Update active players
@@ -1649,6 +1670,14 @@ int main(int argc, char* argv[]) {
                                   subName,
                                   g_config.username,
                                   !g_config.authToken.empty());
+            if (g_confirmDialog.active) {
+                ui.renderConfirmDialog(g_confirmDialog.title,
+                                       g_confirmDialog.prompt,
+                                       g_confirmDialog.itemTitle,
+                                       g_confirmDialog.warning,
+                                       g_confirmDialog.confirmLabel,
+                                       g_confirmDialog.cancelLabel);
+            }
         }
         ui.endFrame();
 
@@ -1677,6 +1706,35 @@ int main(int argc, char* argv[]) {
                         openDownloadsView(ui);
                         g_statusMsg = "Offline: opened Downloads (" + std::to_string(dlItems.size()) + " items)";
                     }
+                }
+            }
+            continue;
+        }
+
+        // Confirmation modal dialog intercepts all inputs
+        if (g_confirmDialog.active) {
+            if ((kDown & KEY_A) || (kDown & KEY_X)) {
+                auto cb = g_confirmDialog.onConfirm;
+                g_confirmDialog.active = false;
+                if (cb) cb();
+            } else if ((kDown & KEY_B) || (kDown & KEY_START)) {
+                auto cb = g_confirmDialog.onCancel;
+                g_confirmDialog.active = false;
+                if (cb) cb();
+            } else if (kDown & KEY_TOUCH) {
+                int tx = (touch.px > 0 || touch.py > 0) ? touch.px : lastTouch.px;
+                int ty = (touch.py > 0 || touch.py > 0) ? touch.py : lastTouch.py;
+                // Cancel button: [30..150, 162..200] -> with slop [20..155, 155..210]
+                if (tx >= 20 && tx <= 155 && ty >= 155 && ty <= 210) {
+                    auto cb = g_confirmDialog.onCancel;
+                    g_confirmDialog.active = false;
+                    if (cb) cb();
+                }
+                // Confirm button: [170..290, 162..200] -> with slop [165..300, 155..210]
+                else if (tx >= 165 && tx <= 300 && ty >= 155 && ty <= 210) {
+                    auto cb = g_confirmDialog.onConfirm;
+                    g_confirmDialog.active = false;
+                    if (cb) cb();
                 }
             }
             continue;
@@ -1847,6 +1905,22 @@ int main(int argc, char* argv[]) {
         if (g_state == AppState::PIN_AUTH) {
             bool isLoggedIn = !g_config.authToken.empty();
 
+            auto promptLogout = [&api]() {
+                g_confirmDialog.active = true;
+                g_confirmDialog.title = "Log Out";
+                g_confirmDialog.prompt = "Are you sure you want to log out of Plex?";
+                g_confirmDialog.itemTitle = g_config.username.empty() ? "Plex Account" : g_config.username;
+                g_confirmDialog.warning = "Saved account token and servers will be cleared.";
+                g_confirmDialog.confirmLabel = "Log Out (A)";
+                g_confirmDialog.cancelLabel = "Cancel (B)";
+                g_confirmDialog.onConfirm = [&api]() {
+                    actionLogout(api);
+                };
+                g_confirmDialog.onCancel = []() {
+                    g_statusMsg = "Cancelled logout.";
+                };
+            };
+
             if (!isLoggedIn) {
                 uint64_t now = osGetTime();
                 if (g_pinId.empty() || g_pinCode.empty()) {
@@ -1877,7 +1951,7 @@ int main(int argc, char* argv[]) {
                 } else if (action == TOUCH_AUTH_SWITCH_ACCOUNT || action == TOUCH_AUTH_SIGN_IN_EMAIL) {
                     actionSignInEmail(api, ui);
                 } else if (action == TOUCH_AUTH_LOGOUT) {
-                    actionLogout(api);
+                    promptLogout();
                 } else if (action == TOUCH_AUTH_BACK) {
                     if (!g_servers.empty()) {
                         g_state = AppState::SERVER_SELECT;
@@ -1907,7 +1981,7 @@ int main(int argc, char* argv[]) {
                 }
             }
             if ((kDown & KEY_X) && isLoggedIn) {
-                actionLogout(api);
+                promptLogout();
             }
             if ((kDown & KEY_Y) && isLoggedIn) {
                 actionSyncServers(api, ui);
@@ -1978,14 +2052,36 @@ int main(int argc, char* argv[]) {
             if (kDown & KEY_Y) {
                 actionSyncServers(api, ui);
             }
-            if ((kDown & KEY_X) && !g_servers.empty()) {
-                std::string remName = g_servers[g_selectedServerIdx].name;
-                g_servers.erase(g_servers.begin() + g_selectedServerIdx);
-                if (g_selectedServerIdx >= (int)g_servers.size()) {
-                    g_selectedServerIdx = std::max(0, (int)g_servers.size() - 1);
-                }
-                saveConfig();
-                g_statusMsg = "Removed " + remName;
+            if ((kDown & KEY_X) && !g_servers.empty() && g_selectedServerIdx >= 0 && g_selectedServerIdx < (int)g_servers.size()) {
+                std::string serverName = g_servers[g_selectedServerIdx].name;
+                int serverIdx = g_selectedServerIdx;
+                g_confirmDialog.active = true;
+                g_confirmDialog.title = "Remove Server";
+                g_confirmDialog.prompt = "Remove this server from your saved list?";
+                g_confirmDialog.itemTitle = serverName;
+                g_confirmDialog.warning = "You will need to re-add or re-sync to connect again.";
+                g_confirmDialog.confirmLabel = "Remove (A)";
+                g_confirmDialog.cancelLabel = "Cancel (B)";
+                g_confirmDialog.onConfirm = [serverIdx, serverName]() {
+                    if (serverIdx >= 0 && serverIdx < (int)g_servers.size() && g_servers[serverIdx].name == serverName) {
+                        g_servers.erase(g_servers.begin() + serverIdx);
+                    } else {
+                        for (auto it = g_servers.begin(); it != g_servers.end(); ++it) {
+                            if (it->name == serverName) {
+                                g_servers.erase(it);
+                                break;
+                            }
+                        }
+                    }
+                    if (g_selectedServerIdx >= (int)g_servers.size()) {
+                        g_selectedServerIdx = std::max(0, (int)g_servers.size() - 1);
+                    }
+                    saveConfig();
+                    g_statusMsg = "Removed " + serverName;
+                };
+                g_confirmDialog.onCancel = []() {
+                    g_statusMsg = "Cancelled server removal.";
+                };
             }
             if ((kDown & KEY_A) && !g_servers.empty()) {
                 s_upHoldFrames = 0;
@@ -2249,28 +2345,58 @@ int main(int argc, char* argv[]) {
                     g_state = AppState::DETAIL_VIEW;
                 }
             }
-            if ((kDown & KEY_X) && !g_items.empty() && g_selectedItemIdx < (int)g_items.size()) {
+            if ((kDown & KEY_X) && !g_items.empty() && g_selectedItemIdx >= 0 && g_selectedItemIdx < (int)g_items.size()) {
                 auto& it = g_items[g_selectedItemIdx];
                 if (it.isOffline || g_downloadManager.isDownloaded(it.ratingKey) || it.key.rfind("__offline", 0) == 0) {
-                    if (isMediaContainer(it.type) && it.key.rfind("__offline", 0) == 0) {
-                        deleteOfflineContainer(it.key);
-                        g_statusMsg = "Deleted " + it.title;
+                    bool isCont = isMediaContainer(it.type) && it.key.rfind("__offline", 0) == 0;
+                    std::string itemTitle = it.title;
+                    std::string itemKey = it.key;
+                    std::string ratingKey = it.ratingKey;
+                    MediaType itemType = it.type;
+
+                    g_confirmDialog.active = true;
+                    if (isCont) {
+                        g_confirmDialog.title = (itemType == MediaType::SHOW || itemType == MediaType::SEASON) 
+                                                ? "Delete Downloaded Show" : "Delete Downloaded Album";
+                        g_confirmDialog.prompt = "Delete all downloaded files in this folder?";
+                        g_confirmDialog.warning = "All downloaded tracks/episodes will be deleted from SD card.";
                     } else {
-                        g_downloadManager.deleteDownload(it.ratingKey);
-                        g_statusMsg = "Deleted " + it.title;
+                        g_confirmDialog.title = "Delete Download";
+                        g_confirmDialog.prompt = "Delete this downloaded media from your SD card?";
+                        g_confirmDialog.warning = "Local file will be removed. You can re-download it later.";
                     }
-                    if ((!g_libraries.empty() && g_selectedLibraryIdx >= 0 && g_selectedLibraryIdx < (int)g_libraries.size() && g_libraries[g_selectedLibraryIdx].key == "__offline__") || g_currentNavTitle == "Downloads" || g_currentNavKey.rfind("__offline", 0) == 0) {
-                        g_items = getOfflineItemsForNavKey(g_currentNavKey);
-                        if (g_selectedItemIdx >= (int)g_items.size()) {
-                            g_selectedItemIdx = std::max(0, (int)g_items.size() - 1);
+                    g_confirmDialog.itemTitle = itemTitle;
+                    g_confirmDialog.confirmLabel = "Delete (A)";
+                    g_confirmDialog.cancelLabel = "Cancel (B)";
+                    g_confirmDialog.onConfirm = [isCont, itemKey, ratingKey, itemTitle]() {
+                        if (isCont) {
+                            deleteOfflineContainer(itemKey);
+                            g_statusMsg = "Deleted " + itemTitle;
+                        } else {
+                            g_downloadManager.deleteDownload(ratingKey);
+                            g_statusMsg = "Deleted " + itemTitle;
                         }
-                        if (g_scrollOffset > g_selectedItemIdx) {
-                            g_scrollOffset = std::max(0, g_selectedItemIdx);
+                        if ((!g_libraries.empty() && g_selectedLibraryIdx >= 0 && g_selectedLibraryIdx < (int)g_libraries.size() && g_libraries[g_selectedLibraryIdx].key == "__offline__") || g_currentNavTitle == "Downloads" || g_currentNavKey.rfind("__offline", 0) == 0) {
+                            g_items = getOfflineItemsForNavKey(g_currentNavKey);
+                            if (g_selectedItemIdx >= (int)g_items.size()) {
+                                g_selectedItemIdx = std::max(0, (int)g_items.size() - 1);
+                            }
+                            if (g_scrollOffset > g_selectedItemIdx) {
+                                g_scrollOffset = std::max(0, g_selectedItemIdx);
+                            }
+                        } else {
+                            for (auto& item : g_items) {
+                                if (item.ratingKey == ratingKey) {
+                                    item.isOffline = false;
+                                    item.localFilePath = "";
+                                    break;
+                                }
+                            }
                         }
-                    } else {
-                        it.isOffline = false;
-                        it.localFilePath = "";
-                    }
+                    };
+                    g_confirmDialog.onCancel = []() {
+                        g_statusMsg = "Cancelled delete.";
+                    };
                 }
             }
             if ((kDown & KEY_Y) && !g_items.empty() && g_selectedItemIdx >= 0 && g_selectedItemIdx < (int)g_items.size() && g_currentNavTitle != "Downloads" && g_currentNavKey.rfind("__offline", 0) != 0) {
@@ -2439,21 +2565,40 @@ int main(int argc, char* argv[]) {
                 g_state = AppState::ITEM_LIST;
             } else if (actionDlOrDel) {
                 if (isItemDownloaded) {
-                    g_downloadManager.deleteDownload(curItem.ratingKey);
-                    g_statusMsg = "Deleted " + curItem.title;
-                    if ((!g_libraries.empty() && g_selectedLibraryIdx >= 0 && g_selectedLibraryIdx < (int)g_libraries.size() && g_libraries[g_selectedLibraryIdx].key == "__offline__") || g_currentNavTitle == "Downloads" || g_currentNavKey.rfind("__offline", 0) == 0) {
-                        g_items = getOfflineItemsForNavKey(g_currentNavKey);
-                        if (g_selectedItemIdx >= (int)g_items.size()) {
-                            g_selectedItemIdx = std::max(0, (int)g_items.size() - 1);
+                    std::string itemTitle = curItem.title;
+                    std::string ratingKey = curItem.ratingKey;
+                    g_confirmDialog.active = true;
+                    g_confirmDialog.title = "Delete Download";
+                    g_confirmDialog.prompt = "Delete this downloaded media from your SD card?";
+                    g_confirmDialog.itemTitle = itemTitle;
+                    g_confirmDialog.warning = "Local file will be removed. You can re-download it later.";
+                    g_confirmDialog.confirmLabel = "Delete (A)";
+                    g_confirmDialog.cancelLabel = "Cancel (B)";
+                    g_confirmDialog.onConfirm = [ratingKey, itemTitle]() {
+                        g_downloadManager.deleteDownload(ratingKey);
+                        g_statusMsg = "Deleted " + itemTitle;
+                        if ((!g_libraries.empty() && g_selectedLibraryIdx >= 0 && g_selectedLibraryIdx < (int)g_libraries.size() && g_libraries[g_selectedLibraryIdx].key == "__offline__") || g_currentNavTitle == "Downloads" || g_currentNavKey.rfind("__offline", 0) == 0) {
+                            g_items = getOfflineItemsForNavKey(g_currentNavKey);
+                            if (g_selectedItemIdx >= (int)g_items.size()) {
+                                g_selectedItemIdx = std::max(0, (int)g_items.size() - 1);
+                            }
+                            if (g_scrollOffset > g_selectedItemIdx) {
+                                g_scrollOffset = std::max(0, g_selectedItemIdx);
+                            }
+                            g_state = AppState::ITEM_LIST;
+                        } else {
+                            for (auto& it : g_items) {
+                                if (it.ratingKey == ratingKey) {
+                                    it.isOffline = false;
+                                    it.localFilePath = "";
+                                    break;
+                                }
+                            }
                         }
-                        if (g_scrollOffset > g_selectedItemIdx) {
-                            g_scrollOffset = std::max(0, g_selectedItemIdx);
-                        }
-                        g_state = AppState::ITEM_LIST;
-                    } else {
-                        curItem.isOffline = false;
-                        curItem.localFilePath = "";
-                    }
+                    };
+                    g_confirmDialog.onCancel = []() {
+                        g_statusMsg = "Cancelled delete.";
+                    };
                 } else {
                     if (g_downloadManager.isDownloading()) {
                         g_statusMsg = "Already downloading an item!";

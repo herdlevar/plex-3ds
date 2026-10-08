@@ -82,22 +82,22 @@ void UIRenderer::drawHeader(const std::string& title, float screenWidth) {
 #endif
 }
 
-void UIRenderer::drawButton(float x, float y, float w, float h, const std::string& label, bool highlighted) {
+void UIRenderer::drawButton(float x, float y, float w, float h, const std::string& label, bool highlighted, float depth) {
 #ifdef __3DS__
     uint32_t bg = highlighted ? COLOR_PLEX_ORANGE : COLOR_PANEL_BG;
     uint32_t textCol = highlighted ? C2D_Color32(0, 0, 0, 255) : COLOR_WHITE;
-    C2D_DrawRectSolid(x, y, 0.5f, w, h, bg);
-    drawText(x + (w <= 75.0f ? 6.0f : 10.0f), y + (h / 4), (w <= 75.0f ? 0.42f : 0.5f), textCol, label);
+    C2D_DrawRectSolid(x, y, depth, w, h, bg);
+    drawText(x + (w <= 75.0f ? 6.0f : 10.0f), y + (h / 4), (w <= 75.0f ? 0.42f : 0.5f), textCol, label, depth + 0.05f);
 #endif
 }
 
-void UIRenderer::drawText(float x, float y, float size, uint32_t color, const std::string& text) {
+void UIRenderer::drawText(float x, float y, float size, uint32_t color, const std::string& text, float depth) {
 #ifdef __3DS__
     if (text.empty()) return;
     C2D_Text c2dText;
     C2D_TextParse(&c2dText, m_dynamicTextBuf, text.c_str());
     C2D_TextOptimize(&c2dText);
-    C2D_DrawText(&c2dText, C2D_WithColor, x, y, 0.6f, size, size, color);
+    C2D_DrawText(&c2dText, C2D_WithColor, x, y, depth, size, size, color);
 #endif
 }
 
@@ -792,6 +792,72 @@ void UIRenderer::renderBlankBottomScreen() {
 #ifdef __3DS__
     C2D_TargetClear(m_bottomTarget, C2D_Color32(0, 0, 0, 255));
     C2D_SceneBegin(m_bottomTarget);
+#endif
+}
+
+void UIRenderer::renderConfirmDialog(const std::string& title,
+                                     const std::string& prompt,
+                                     const std::string& itemTitle,
+                                     const std::string& warning,
+                                     const std::string& confirmLabel,
+                                     const std::string& cancelLabel) {
+#ifdef __3DS__
+    // Semi-transparent dark overlay covering entire bottom screen
+    C2D_DrawRectSolid(0, 0, 0.70f, 320, 240, C2D_Color32(0, 0, 0, 210));
+
+    // Centered modal card (320x240 screen, card 288x196)
+    float cardX = 16.0f, cardY = 22.0f, cardW = 288.0f, cardH = 196.0f;
+    // Outer border (Plex orange accent)
+    C2D_DrawRectSolid(cardX - 2.0f, cardY - 2.0f, 0.72f, cardW + 4.0f, cardH + 4.0f, COLOR_PLEX_ORANGE);
+    // Card panel background
+    C2D_DrawRectSolid(cardX, cardY, 0.73f, cardW, cardH, COLOR_PANEL_BG);
+
+    // Title banner
+    C2D_DrawRectSolid(cardX, cardY, 0.75f, cardW, 28.0f, COLOR_PLEX_ORANGE);
+    drawText(cardX + 12.0f, cardY + 5.0f, 0.52f, C2D_Color32(0, 0, 0, 255), title, 0.80f);
+
+    // Prompt message
+    drawText(cardX + 14.0f, cardY + 38.0f, 0.44f, COLOR_WHITE, prompt, 0.80f);
+
+    // Item title
+    std::string dispItem = itemTitle;
+    if (dispItem.length() > 28) {
+        dispItem = dispItem.substr(0, 26) + "..";
+    }
+    drawText(cardX + 14.0f, cardY + 62.0f, 0.54f, COLOR_PLEX_ORANGE, dispItem, 0.80f);
+
+    // Warning text (support 2 lines if needed)
+    if (!warning.empty()) {
+        std::string warn1 = warning;
+        std::string warn2 = "";
+        if (warn1.length() > 36) {
+            size_t sp = warn1.rfind(' ', 36);
+            if (sp != std::string::npos) {
+                warn2 = warn1.substr(sp + 1);
+                warn1 = warn1.substr(0, sp);
+            }
+        }
+        uint32_t warnColor = C2D_Color32(0xFF, 0x75, 0x75, 0xFF);
+        drawText(cardX + 14.0f, cardY + 92.0f, 0.38f, warnColor, warn1, 0.80f);
+        if (!warn2.empty()) {
+            drawText(cardX + 14.0f, cardY + 110.0f, 0.38f, warnColor, warn2, 0.80f);
+        }
+    }
+
+    // Action buttons at bottom of card
+    float btnY = cardY + cardH - 56.0f;
+    float btnW = 120.0f, btnH = 38.0f;
+
+    // Left button: Cancel
+    drawButton(cardX + 14.0f, btnY, btnW, btnH, cancelLabel, false, 0.76f);
+
+    // Right button: Confirm / Delete (Red highlight)
+    float confX = cardX + cardW - 14.0f - btnW;
+    C2D_DrawRectSolid(confX, btnY, 0.76f, btnW, btnH, C2D_Color32(0xD3, 0x2F, 0x2F, 0xFF));
+    drawText(confX + (btnW <= 90.0f ? 8.0f : 14.0f), btnY + 9.0f, 0.48f, COLOR_WHITE, confirmLabel, 0.82f);
+
+    // Bottom footnote hint
+    drawText(cardX + 18.0f, cardY + cardH - 14.0f, 0.33f, COLOR_GRAY, "Press (A) to confirm, (B) to cancel", 0.80f);
 #endif
 }
 

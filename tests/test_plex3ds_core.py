@@ -627,6 +627,201 @@ class TestPlex3DSAudioPlayerSeeking(unittest.TestCase):
         self.assertEqual(player.current_sec, 200)
 
 
+class TestPlex3DSConfirmDialog(unittest.TestCase):
+    """
+    Tests the confirmation modal dialog behavior, button/touch boundaries,
+    and callback execution order for dangerous deletion operations.
+    """
+    class SimulatedConfirmDialog:
+        def __init__(self):
+            self.active = False
+            self.title = ""
+            self.prompt = ""
+            self.item_title = ""
+            self.warning = ""
+            self.confirm_label = "Delete (A)"
+            self.cancel_label = "Cancel (B)"
+            self.on_confirm = None
+            self.on_cancel = None
+
+        def show(self, title, prompt, item_title, warning="", confirm_label="Delete (A)", cancel_label="Cancel (B)", on_confirm=None, on_cancel=None):
+            self.active = True
+            self.title = title
+            self.prompt = prompt
+            self.item_title = item_title
+            self.warning = warning
+            self.confirm_label = confirm_label
+            self.cancel_label = cancel_label
+            self.on_confirm = on_confirm
+            self.on_cancel = on_cancel
+
+        def handle_input(self, key=None, touch=None):
+            if not self.active:
+                return False
+
+            if key in ("A", "X"):
+                cb = self.on_confirm
+                self.active = False
+                if cb:
+                    cb()
+                return True
+
+            if key in ("B", "START"):
+                cb = self.on_cancel
+                self.active = False
+                if cb:
+                    cb()
+                return True
+
+            if touch is not None:
+                tx, ty = touch
+                # Cancel button: [20..155, 155..210]
+                if 20 <= tx <= 155 and 155 <= ty <= 210:
+                    cb = self.on_cancel
+                    self.active = False
+                    if cb:
+                        cb()
+                    return True
+                # Confirm button: [165..300, 155..210]
+                elif 165 <= tx <= 300 and 155 <= ty <= 210:
+                    cb = self.on_confirm
+                    self.active = False
+                    if cb:
+                        cb()
+                    return True
+
+            # All other inputs swallowed while active
+            return True
+
+    def test_inactive_does_not_consume_input(self):
+        dlg = self.SimulatedConfirmDialog()
+        self.assertFalse(dlg.handle_input(key="A"))
+        self.assertFalse(dlg.handle_input(key="B"))
+        self.assertFalse(dlg.handle_input(touch=(100, 180)))
+
+    def test_key_confirm_triggers_callback(self):
+        dlg = self.SimulatedConfirmDialog()
+        confirmed = []
+        cancelled = []
+        dlg.show("Delete Download", "Delete?", "Test Track", on_confirm=lambda: confirmed.append(True), on_cancel=lambda: cancelled.append(True))
+        self.assertTrue(dlg.active)
+
+        consumed = dlg.handle_input(key="A")
+        self.assertTrue(consumed)
+        self.assertFalse(dlg.active)
+        self.assertEqual(confirmed, [True])
+        self.assertEqual(cancelled, [])
+
+    def test_key_x_also_confirms(self):
+        dlg = self.SimulatedConfirmDialog()
+        confirmed = []
+        dlg.show("Delete Download", "Delete?", "Test Track", on_confirm=lambda: confirmed.append(True))
+        consumed = dlg.handle_input(key="X")
+        self.assertTrue(consumed)
+        self.assertFalse(dlg.active)
+        self.assertEqual(confirmed, [True])
+
+    def test_key_cancel_triggers_callback(self):
+        dlg = self.SimulatedConfirmDialog()
+        confirmed = []
+        cancelled = []
+        dlg.show("Delete Download", "Delete?", "Test Track", on_confirm=lambda: confirmed.append(True), on_cancel=lambda: cancelled.append(True))
+
+        consumed = dlg.handle_input(key="B")
+        self.assertTrue(consumed)
+        self.assertFalse(dlg.active)
+        self.assertEqual(confirmed, [])
+        self.assertEqual(cancelled, [True])
+
+    def test_start_key_cancels_safely(self):
+        dlg = self.SimulatedConfirmDialog()
+        cancelled = []
+        dlg.show("Delete Download", "Delete?", "Test Track", on_cancel=lambda: cancelled.append(True))
+
+        consumed = dlg.handle_input(key="START")
+        self.assertTrue(consumed)
+        self.assertFalse(dlg.active)
+        self.assertEqual(cancelled, [True])
+
+    def test_touch_cancel_and_confirm_boundaries(self):
+        dlg = self.SimulatedConfirmDialog()
+        confirmed = []
+        cancelled = []
+
+        # Test touch Cancel button
+        dlg.show("Delete Download", "Delete?", "Test Track",
+                 on_confirm=lambda: confirmed.append(True),
+                 on_cancel=lambda: cancelled.append(True))
+        self.assertTrue(dlg.handle_input(touch=(85, 180)))
+        self.assertFalse(dlg.active)
+        self.assertEqual(cancelled, [True])
+        self.assertEqual(confirmed, [])
+
+        # Test touch Confirm button
+        dlg.show("Delete Download", "Delete?", "Test Track",
+                 on_confirm=lambda: confirmed.append(True),
+                 on_cancel=lambda: cancelled.append(True))
+        self.assertTrue(dlg.handle_input(touch=(230, 180)))
+        self.assertFalse(dlg.active)
+        self.assertEqual(confirmed, [True])
+
+        # Test edge boundaries
+        # Cancel min/max
+        dlg.show("Del", "Del", "Item", on_cancel=lambda: cancelled.append(2))
+        self.assertTrue(dlg.handle_input(touch=(20, 155)))
+        self.assertEqual(cancelled, [True, 2])
+
+        dlg.show("Del", "Del", "Item", on_cancel=lambda: cancelled.append(3))
+        self.assertTrue(dlg.handle_input(touch=(155, 210)))
+        self.assertEqual(cancelled, [True, 2, 3])
+
+        # Confirm min/max
+        dlg.show("Del", "Del", "Item", on_confirm=lambda: confirmed.append(2))
+        self.assertTrue(dlg.handle_input(touch=(165, 155)))
+        self.assertEqual(confirmed, [True, 2])
+
+        dlg.show("Del", "Del", "Item", on_confirm=lambda: confirmed.append(3))
+        self.assertTrue(dlg.handle_input(touch=(300, 210)))
+        self.assertEqual(confirmed, [True, 2, 3])
+
+    def test_touch_outside_swallowed_without_callback(self):
+        dlg = self.SimulatedConfirmDialog()
+        confirmed = []
+        cancelled = []
+        dlg.show("Delete Download", "Delete?", "Test Track",
+                 on_confirm=lambda: confirmed.append(True),
+                 on_cancel=lambda: cancelled.append(True))
+
+        # Dead zone between buttons (tx=160, ty=180)
+        self.assertTrue(dlg.handle_input(touch=(160, 180)))
+        self.assertTrue(dlg.active)
+        self.assertEqual(confirmed, [])
+        self.assertEqual(cancelled, [])
+
+        # Outside modal card
+        self.assertTrue(dlg.handle_input(touch=(10, 10)))
+        self.assertTrue(dlg.active)
+        self.assertEqual(confirmed, [])
+        self.assertEqual(cancelled, [])
+
+    def test_delete_download_flow_cancelled_preserves_item(self):
+        storage = {"track_001": "/sdmc/plex/track_001.mp3"}
+        dlg = self.SimulatedConfirmDialog()
+
+        def do_delete():
+            del storage["track_001"]
+
+        dlg.show("Delete Download", "Are you sure?", "Revolver - Taxman", on_confirm=do_delete)
+        # User presses B (cancel)
+        dlg.handle_input(key="B")
+        self.assertIn("track_001", storage)
+
+        # User repeats and confirms with A
+        dlg.show("Delete Download", "Are you sure?", "Revolver - Taxman", on_confirm=do_delete)
+        dlg.handle_input(key="A")
+        self.assertNotIn("track_001", storage)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
 

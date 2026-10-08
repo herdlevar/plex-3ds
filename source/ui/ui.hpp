@@ -90,6 +90,13 @@ public:
 
     void renderBlankBottomScreen();
 
+    void renderConfirmDialog(const std::string& title,
+                             const std::string& prompt,
+                             const std::string& itemTitle,
+                             const std::string& warning = "",
+                             const std::string& confirmLabel = "Delete (A)",
+                             const std::string& cancelLabel = "Cancel (B)");
+
     // Touch Interaction
     int handleTouch(AppState state, int touchX, int touchY, int itemCount, bool hasNowPlaying = false, bool isLoggedIn = false, bool hasServers = false, const std::vector<PlexMediaItem>* items = nullptr, int scrollOffset = 0, const std::string& listTitle = "");
 
@@ -103,6 +110,6 @@ private:
 #endif
 
     void drawHeader(const std::string& title, float screenWidth);
-    void drawButton(float x, float y, float w, float h, const std::string& label, bool highlighted = false);
-    void drawText(float x, float y, float size, uint32_t color, const std::string& text);
+    void drawButton(float x, float y, float w, float h, const std::string& label, bool highlighted = false, float depth = 0.5f);
+    void drawText(float x, float y, float size, uint32_t color, const std::string& text, float depth = 0.6f);
 };
