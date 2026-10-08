@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
+#include <deque>
 
 static const std::string BASE_DOWNLOAD_DIR   = "sdmc:/3ds/plex-3ds/downloads";
 static const std::string MOVIES_DOWNLOAD_DIR = "sdmc:/3ds/plex-3ds/downloads/Movies";
@@ -547,8 +548,86 @@ void DownloadManager::downloadThreadEntry(void* arg) {
     if (self) self->downloadLoop();
 }
 
+static constexpr size_t NUM_STAGING_BLOCKS = 16;
+static constexpr size_t STAGING_BLOCK_SIZE = 64 * 1024; // 64 KB (matches SD FAT32 cluster size)
+
+struct alignas(32) StagingBlock {
+    size_t size = 0;
+    uint8_t data[STAGING_BLOCK_SIZE];
+};
+
+struct DownloadContext {
+    DownloadManager* mgr = nullptr;
+    FILE* fp = nullptr;
+
+    std::mutex queueMutex;
+    std::deque<StagingBlock*> freeBlocks;
+    std::deque<StagingBlock*> writeQueue;
+    StagingBlock* activeBlock = nullptr;
+
+    std::atomic<bool> downloadFinished{false};
+    std::atomic<bool> writerError{false};
+    bool useWriterThread = false;
+    Thread writerThread = nullptr;
+};
+
+void DownloadManager::writerThreadEntry(void* arg) {
+    DownloadContext* dc = static_cast<DownloadContext*>(arg);
+    if (!dc) return;
+
+    while (true) {
+        if (dc->mgr->m_cancelRequested.load() || g_appExiting.load() || dc->writerError.load()) {
+            break;
+        }
+
+        while (g_isSuspended.load() && !dc->mgr->m_cancelRequested.load() && !g_appExiting.load()) {
+            svcSleepThread(50000000); // 50ms pause during Home Menu
+        }
+
+        StagingBlock* blockToWrite = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(dc->queueMutex);
+            if (!dc->writeQueue.empty()) {
+                blockToWrite = dc->writeQueue.front();
+                dc->writeQueue.pop_front();
+            }
+        }
+
+        if (blockToWrite) {
+            if (blockToWrite->size > 0 && dc->fp) {
+                size_t written = fwrite(blockToWrite->data, 1, blockToWrite->size, dc->fp);
+                if (written != blockToWrite->size) {
+                    dc->writerError.store(true);
+                }
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(dc->queueMutex);
+                blockToWrite->size = 0;
+                dc->freeBlocks.push_back(blockToWrite);
+            }
+            continue; // Keep flushing blocks without sleeping
+        }
+
+        // writeQueue is empty
+        if (dc->downloadFinished.load()) {
+            std::lock_guard<std::mutex> lock(dc->queueMutex);
+            if (dc->writeQueue.empty()) {
+                break; // Complete
+            }
+            continue;
+        }
+
+        // Sleep 2ms waiting for network thread to fill a block
+        svcSleepThread(2000000); // 2ms
+    }
+}
+
 void DownloadManager::downloadLoop() {
     ensureDirectories();
+
+    // Pre-allocate 1 MB staging reservoir (16 x 64 KB blocks) for decoupled SD writes
+    std::vector<StagingBlock> blockStorage(NUM_STAGING_BLOCKS);
 
     while (!m_cancelRequested.load() && !g_appExiting.load()) {
         QueuedDownload current;
@@ -607,19 +686,96 @@ void DownloadManager::downloadLoop() {
             break;
         }
 
-        struct DownloadContext {
-            DownloadManager* mgr;
-            FILE* fp;
-        } ctx = { this, outFile };
+        DownloadContext ctx;
+        ctx.mgr = this;
+        ctx.fp = outFile;
+        ctx.downloadFinished.store(false);
+        ctx.writerError.store(false);
+        ctx.useWriterThread = false;
+        ctx.writerThread = nullptr;
+        ctx.activeBlock = nullptr;
+        ctx.freeBlocks.clear();
+        ctx.writeQueue.clear();
+
+        for (size_t i = 0; i < NUM_STAGING_BLOCKS; ++i) {
+            blockStorage[i].size = 0;
+            ctx.freeBlocks.push_back(&blockStorage[i]);
+        }
+
+        ctx.writerThread = threadCreate(writerThreadEntry, &ctx, 64 * 1024, 0x33, -1, false);
+        if (!ctx.writerThread) {
+            ctx.writerThread = threadCreate(writerThreadEntry, &ctx, 64 * 1024, 0x33, -2, false);
+        }
+        if (ctx.writerThread) {
+            ctx.useWriterThread = true;
+        }
 
         auto writeCb = [](void* ptr, size_t size, size_t nmemb, void* userdata) -> size_t {
-            DownloadContext* dc = (DownloadContext*)userdata;
-            if (dc->mgr->m_cancelRequested.load() || g_appExiting.load()) return 0;
+            size_t totalBytes = size * nmemb;
+            if (totalBytes == 0) return 0;
+            DownloadContext* dc = static_cast<DownloadContext*>(userdata);
+
+            if (dc->mgr->m_cancelRequested.load() || g_appExiting.load() || dc->writerError.load()) return 0;
             while (g_isSuspended.load() && !dc->mgr->m_cancelRequested.load() && !g_appExiting.load()) {
                 svcSleepThread(50000000); // 50ms pause during Home Menu
             }
-            if (dc->mgr->m_cancelRequested.load() || g_appExiting.load()) return 0;
-            return fwrite(ptr, 1, size * nmemb, dc->fp);
+            if (dc->mgr->m_cancelRequested.load() || g_appExiting.load() || dc->writerError.load()) return 0;
+
+            if (!dc->useWriterThread) {
+                // Synchronous fallback
+                return fwrite(ptr, 1, totalBytes, dc->fp);
+            }
+
+            const uint8_t* src = static_cast<const uint8_t*>(ptr);
+            size_t bytesLeft = totalBytes;
+
+            while (bytesLeft > 0) {
+                if (dc->mgr->m_cancelRequested.load() || g_appExiting.load() || dc->writerError.load()) {
+                    return 0;
+                }
+
+                while (g_isSuspended.load() && !dc->mgr->m_cancelRequested.load() && !g_appExiting.load()) {
+                    svcSleepThread(50000000); // 50ms pause during Home Menu
+                }
+                if (dc->mgr->m_cancelRequested.load() || g_appExiting.load() || dc->writerError.load()) {
+                    return 0;
+                }
+
+                if (!dc->activeBlock) {
+                    while (true) {
+                        {
+                            std::lock_guard<std::mutex> lock(dc->queueMutex);
+                            if (!dc->freeBlocks.empty()) {
+                                dc->activeBlock = dc->freeBlocks.front();
+                                dc->freeBlocks.pop_front();
+                                dc->activeBlock->size = 0;
+                                break;
+                            }
+                        }
+                        if (dc->mgr->m_cancelRequested.load() || g_appExiting.load() || dc->writerError.load()) {
+                            return 0;
+                        }
+                        svcSleepThread(2000000); // 2ms wait for writer thread to free a block
+                    }
+                }
+
+                size_t space = STAGING_BLOCK_SIZE - dc->activeBlock->size;
+                size_t toCopy = std::min(bytesLeft, space);
+                std::memcpy(dc->activeBlock->data + dc->activeBlock->size, src, toCopy);
+                dc->activeBlock->size += toCopy;
+                src += toCopy;
+                bytesLeft -= toCopy;
+
+                if (dc->activeBlock->size >= STAGING_BLOCK_SIZE) {
+                    {
+                        std::lock_guard<std::mutex> lock(dc->queueMutex);
+                        dc->writeQueue.push_back(dc->activeBlock);
+                    }
+                    dc->activeBlock = nullptr;
+                }
+            }
+
+            return totalBytes;
         };
 
         auto xferInfoCb = [](void* clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) -> int {
@@ -729,12 +885,29 @@ void DownloadManager::downloadLoop() {
 
         CURLcode res = curl_easy_perform(curl);
 
+        if (ctx.useWriterThread) {
+            // Push any remaining partial block (< 64 KB) to the write queue
+            if (ctx.activeBlock && ctx.activeBlock->size > 0 &&
+                !m_cancelRequested.load() && !g_appExiting.load() && !ctx.writerError.load()) {
+                std::lock_guard<std::mutex> lock(ctx.queueMutex);
+                ctx.writeQueue.push_back(ctx.activeBlock);
+                ctx.activeBlock = nullptr;
+            }
+            ctx.downloadFinished.store(true);
+
+            if (ctx.writerThread) {
+                threadJoin(ctx.writerThread, U64_MAX);
+                threadFree(ctx.writerThread);
+                ctx.writerThread = nullptr;
+            }
+        }
+
         curl_slist_free_all(headers);
         curl_easy_cleanup(curl);
         fflush(outFile);
         fclose(outFile);
 
-        if (res == CURLE_OK && !m_cancelRequested.load()) {
+        if (res == CURLE_OK && !m_cancelRequested.load() && !ctx.writerError.load()) {
             int64_t fileSize = 0;
             struct stat st;
             if (stat(finalPath.c_str(), &st) == 0) {
@@ -757,6 +930,10 @@ void DownloadManager::downloadLoop() {
                 std::lock_guard<std::mutex> lock(m_progressMutex);
                 m_progress.statusText = "Cancelled";
                 break;
+            } else if (ctx.writerError.load()) {
+                std::lock_guard<std::mutex> lock(m_progressMutex);
+                m_progress.statusText = "Failed: SD card write error";
+                m_progress.failed = true;
             } else {
                 std::lock_guard<std::mutex> lock(m_progressMutex);
                 m_progress.statusText = std::string("Failed: ") + curl_easy_strerror(res);

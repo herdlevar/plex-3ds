@@ -947,6 +947,170 @@ class TestPlex3DSConfirmDialog(unittest.TestCase):
         self.assertNotIn("track_001", storage)
 
 
+class TestPlex3DSDecoupledDownloadBuffer(unittest.TestCase):
+    BLOCK_SIZE = 64 * 1024       # 64 KB (matches SD FAT32 cluster size)
+    NUM_BLOCKS = 16              # 16 blocks = 1024 KB (1 MB)
+
+    class SimulatedPipeline:
+        def __init__(self, block_size=64 * 1024, num_blocks=16):
+            self.block_size = block_size
+            self.num_blocks = num_blocks
+            self.free_blocks = [bytearray(block_size) for _ in range(num_blocks)]
+            self.write_queue = []  # list of (bytearray, valid_length)
+            self.active_block = None
+            self.active_size = 0
+            self.written_chunks = []
+            self.writer_error = False
+            self.cancelled = False
+
+        def get_total_blocks(self):
+            count = len(self.free_blocks) + len(self.write_queue)
+            if self.active_block is not None:
+                count += 1
+            return count
+
+        def write_cb(self, chunk: bytes) -> int:
+            if self.cancelled or self.writer_error:
+                return 0
+            idx = 0
+            total = len(chunk)
+            while idx < total:
+                if self.cancelled or self.writer_error:
+                    return 0
+                if self.active_block is None:
+                    if not self.free_blocks:
+                        # Emulate writer thread consuming a block under backpressure
+                        self.writer_flush_step()
+                        if not self.free_blocks:
+                            raise RuntimeError("Buffer pool overflow")
+                    self.active_block = self.free_blocks.pop(0)
+                    self.active_size = 0
+
+                space = self.block_size - self.active_size
+                to_copy = min(total - idx, space)
+                self.active_block[self.active_size : self.active_size + to_copy] = chunk[idx : idx + to_copy]
+                self.active_size += to_copy
+                idx += to_copy
+
+                if self.active_size >= self.block_size:
+                    self.write_queue.append((self.active_block, self.active_size))
+                    self.active_block = None
+                    self.active_size = 0
+            return total
+
+        def writer_flush_step(self):
+            if self.write_queue:
+                buf, sz = self.write_queue.pop(0)
+                if not self.writer_error:
+                    self.written_chunks.append(bytes(buf[:sz]))
+                self.free_blocks.append(buf)
+
+        def finish(self):
+            if self.active_block and self.active_size > 0:
+                self.write_queue.append((self.active_block, self.active_size))
+                self.active_block = None
+                self.active_size = 0
+            while self.write_queue:
+                self.writer_flush_step()
+
+    def test_pool_invariants_and_capacity(self):
+        pipe = self.SimulatedPipeline(self.BLOCK_SIZE, self.NUM_BLOCKS)
+        self.assertEqual(pipe.get_total_blocks(), 16)
+        self.assertEqual(len(pipe.free_blocks), 16)
+
+        # Write 100 KB in 10 KB chunks
+        for _ in range(10):
+            pipe.write_cb(b"A" * 10240)
+            self.assertEqual(pipe.get_total_blocks(), 16)
+
+        pipe.finish()
+        self.assertEqual(pipe.get_total_blocks(), 16)
+        total_bytes = sum(len(c) for c in pipe.written_chunks)
+        self.assertEqual(total_bytes, 102400)
+
+    def test_exact_64kb_cluster_aligned_writes(self):
+        pipe = self.SimulatedPipeline(self.BLOCK_SIZE, self.NUM_BLOCKS)
+
+        # Write 200,000 bytes (which is 3 full 64KB blocks + 3424 bytes tail)
+        # using arbitrary variable packet sizes (512, 1460, 4096, 16384)
+        chunk_sizes = [512, 1460, 4096, 16384, 8192, 1024]
+        total_target = 200000
+        sent = 0
+        i = 0
+        while sent < total_target:
+            sz = min(chunk_sizes[i % len(chunk_sizes)], total_target - sent)
+            pipe.write_cb(b"X" * sz)
+            sent += sz
+            i += 1
+            # Intermittently step the writer thread
+            if i % 3 == 0:
+                pipe.writer_flush_step()
+
+        pipe.finish()
+
+        # All chunks except the last tail MUST be strictly 64 KB (65536 bytes)
+        self.assertEqual(len(pipe.written_chunks), 4)
+        self.assertEqual(len(pipe.written_chunks[0]), 65536)
+        self.assertEqual(len(pipe.written_chunks[1]), 65536)
+        self.assertEqual(len(pipe.written_chunks[2]), 65536)
+        self.assertEqual(len(pipe.written_chunks[3]), 200000 - (3 * 65536))
+        self.assertEqual(sum(len(c) for c in pipe.written_chunks), 200000)
+
+    def test_payload_integrity_multi_megabytes(self):
+        pipe = self.SimulatedPipeline(self.BLOCK_SIZE, self.NUM_BLOCKS)
+        # Create 2.5 MB deterministic test pattern
+        pattern = bytes([i % 256 for i in range(256)])
+        raw_data = (pattern * 10240)[: 2500000]
+
+        # Feed in random-like chunk slices
+        cursor = 0
+        sizes = [1337, 8192, 65536, 4096, 100, 32768, 65536]
+        idx = 0
+        while cursor < len(raw_data):
+            step = min(sizes[idx % len(sizes)], len(raw_data) - cursor)
+            pipe.write_cb(raw_data[cursor : cursor + step])
+            cursor += step
+            idx += 1
+            if idx % 2 == 0:
+                pipe.writer_flush_step()
+
+        pipe.finish()
+        reconstructed = b"".join(pipe.written_chunks)
+        self.assertEqual(len(reconstructed), len(raw_data))
+        self.assertEqual(reconstructed, raw_data)
+
+    def test_backpressure_handles_unwritten_burst(self):
+        pipe = self.SimulatedPipeline(self.BLOCK_SIZE, self.NUM_BLOCKS)
+        # Burst 16 full 64KB blocks (1 MB) without flushing
+        for i in range(16):
+            pipe.write_cb(bytes([i] * 65536))
+
+        # All 16 blocks are in write_queue; free_blocks is empty
+        self.assertEqual(len(pipe.write_queue), 16)
+        self.assertEqual(len(pipe.free_blocks), 0)
+
+        # 17th block triggers backpressure flush
+        pipe.write_cb(b"B" * 65536)
+        self.assertEqual(pipe.get_total_blocks(), 16)
+
+        pipe.finish()
+        self.assertEqual(len(pipe.written_chunks), 17)
+        self.assertEqual(pipe.get_total_blocks(), 16)
+
+    def test_writer_error_aborts_pipeline(self):
+        pipe = self.SimulatedPipeline(self.BLOCK_SIZE, self.NUM_BLOCKS)
+        pipe.write_cb(b"A" * 65536)
+        pipe.writer_error = True
+        # Once error is set, write_cb immediately returns 0 to signal curl abort
+        self.assertEqual(pipe.write_cb(b"B" * 1024), 0)
+
+    def test_cancellation_aborts_pipeline(self):
+        pipe = self.SimulatedPipeline(self.BLOCK_SIZE, self.NUM_BLOCKS)
+        pipe.write_cb(b"A" * 65536)
+        pipe.cancelled = True
+        self.assertEqual(pipe.write_cb(b"B" * 1024), 0)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
 

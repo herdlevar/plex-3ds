@@ -85,6 +85,7 @@ private:
 #ifdef __3DS__
     Thread m_thread = nullptr;
     static void downloadThreadEntry(void* arg);
+    static void writerThreadEntry(void* arg);
     void downloadLoop();
 #endif
 
