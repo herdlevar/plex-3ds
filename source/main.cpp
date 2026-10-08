@@ -92,10 +92,6 @@ static void onAptHook(APT_HookType hook, void* param) {
         case APTHOOK_ONSLEEP:
             g_gpuRightLost = true;
             g_isSuspended = true;
-            if (s_bottomScreenOff) {
-                s_bottomScreenOff = false;
-                GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_BOTTOM);
-            }
             if (g_pVideoPlayer && g_pVideoPlayer->isPlaying()) {
                 if (!g_pVideoPlayer->isPaused()) {
                     g_videoWasPlayingOnSuspend = true;
@@ -112,13 +108,10 @@ static void onAptHook(APT_HookType hook, void* param) {
 
         case APTHOOK_ONRESTORE:
         case APTHOOK_ONWAKEUP:
-            // CRITICAL: Do NOT access DSP/NDSP services here!
-            // In libctru, APTHOOK_ONRESTORE is called BEFORE aptDspWakeup().
-            // Hardware resume is deferred to the main loop once aptMainLoop() returns.
+            // CRITICAL: Do NOT access DSP/NDSP or GSP/LCD services here!
+            // In libctru, APTHOOK_ONRESTORE is called before hardware services finish re-synchronization.
+            // Hardware and display resume is deferred to the main loop once aptMainLoop() returns.
             g_gpuRightLost = false;
-            s_bottomScreenOff = false;
-            GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_TOP);
-            GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_BOTTOM);
             s_shellClosed = false;
             s_lastUserActivityTime = osGetTime();
             g_isSuspended = false;
@@ -128,10 +121,6 @@ static void onAptHook(APT_HookType hook, void* param) {
         case APTHOOK_ONEXIT:
             g_appExiting = true;
             g_gpuRightLost = true;
-            if (s_bottomScreenOff) {
-                s_bottomScreenOff = false;
-                GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_BOTTOM);
-            }
             g_downloadManager.cancelDownload();
             if (g_pVideoPlayer) g_pVideoPlayer->stop();
             if (g_pAudioPlayer) g_pAudioPlayer->stop();
@@ -755,7 +744,6 @@ int main(int argc, char* argv[]) {
 #ifdef __3DS__
     // Start at standard 268MHz CPU clock to conserve battery; 804MHz is engaged on demand during video
     osSetSpeedupEnable(false);
-    APT_SetAppCpuTimeLimit(80);
     gspLcdInit();
     ptmuInit();
     ndspInit();
@@ -834,13 +822,13 @@ int main(int argc, char* argv[]) {
         if (g_appExiting.load()) {
             break;
         }
-        if (g_isSuspended.load() || g_gpuRightLost.load()) {
-            svcSleepThread(20000000);
-            continue;
-        }
 
         if (g_needsPostWakeupResume.exchange(false)) {
             ndspSetMasterVol(1.0f);
+            s_bottomScreenOff = false;
+            GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_TOP);
+            GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_BOTTOM);
+            s_lastUserActivityTime = osGetTime();
             if (g_videoWasPlayingOnSuspend && g_pVideoPlayer) {
                 g_pVideoPlayer->resumeFromSuspend();
                 g_videoWasPlayingOnSuspend = false;

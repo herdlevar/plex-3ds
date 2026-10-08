@@ -64,7 +64,6 @@ void UIRenderer::exit() {
 
 void UIRenderer::beginFrame() {
 #ifdef __3DS__
-    if (g_gpuRightLost.load()) return;
     C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
     C2D_TextBufClear(m_dynamicTextBuf);
 #endif
@@ -72,7 +71,6 @@ void UIRenderer::beginFrame() {
 
 void UIRenderer::endFrame() {
 #ifdef __3DS__
-    if (g_gpuRightLost.load()) return;
     C3D_FrameEnd(0);
 #endif
 }
