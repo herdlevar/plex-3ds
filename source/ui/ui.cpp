@@ -569,9 +569,9 @@ void UIRenderer::renderBottomScreen(AppState state,
             if (itemIdx >= (int)items.size()) break;
             bool sel = (itemIdx == selectedIndex);
             std::string label = items[itemIdx].title;
-            if (items[itemIdx].isOffline) {
-                label = "[DL] " + label;
-            } else if (items[itemIdx].type == MediaType::TRACK && items[itemIdx].index > 0) {
+            if (items[itemIdx].type == MediaType::TRACK && items[itemIdx].index > 0) {
+                label = std::to_string(items[itemIdx].index) + ". " + items[itemIdx].title;
+            } else if (items[itemIdx].type == MediaType::EPISODE && items[itemIdx].index > 0) {
                 label = std::to_string(items[itemIdx].index) + ". " + items[itemIdx].title;
             } else if (items[itemIdx].type == MediaType::ARTIST) {
                 label = "[Artist] " + items[itemIdx].title;
@@ -586,8 +586,13 @@ void UIRenderer::renderBottomScreen(AppState state,
             } else if (items[itemIdx].type == MediaType::SEASON) {
                 label = "[Season] " + items[itemIdx].title;
             }
+            if (items[itemIdx].isOffline && !isMediaContainer(items[itemIdx].type) && listTitle != "Downloads" && listTitle.rfind("Downloaded", 0) != 0 && items[itemIdx].key.rfind("__offline", 0) != 0) {
+                label = "[DL] " + label;
+            }
 
-            bool isContainer = (items[itemIdx].type == MediaType::ALBUM || items[itemIdx].type == MediaType::SEASON) && (listTitle != "Downloads");
+            bool isContainer = (items[itemIdx].type == MediaType::ALBUM || items[itemIdx].type == MediaType::SEASON) &&
+                               (listTitle != "Downloads") && (listTitle.rfind("Downloaded", 0) != 0) &&
+                               (items[itemIdx].key.rfind("__offline", 0) != 0);
             int maxLen = isContainer ? 19 : 27;
 
             std::string displayLabel = label;
@@ -860,8 +865,10 @@ int UIRenderer::handleTouch(AppState state, int touchX, int touchY, int itemCoun
         for (int i = 0; i < std::min(itemCount, maxVis); i++) {
             int itemIdx = scrollOffset + i;
             bool isContainer = false;
-            if (items && itemIdx < (int)items->size() && listTitle != "Downloads") {
-                isContainer = ((*items)[itemIdx].type == MediaType::ALBUM || (*items)[itemIdx].type == MediaType::SEASON);
+            if (items && itemIdx < (int)items->size() && listTitle != "Downloads" && listTitle.rfind("Downloaded", 0) != 0) {
+                if ((*items)[itemIdx].key.rfind("__offline", 0) != 0) {
+                    isContainer = ((*items)[itemIdx].type == MediaType::ALBUM || (*items)[itemIdx].type == MediaType::SEASON);
+                }
             }
 
             if (isContainer) {

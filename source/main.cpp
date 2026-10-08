@@ -14,6 +14,7 @@
 #endif
 
 #include <vector>
+#include <set>
 #include <memory>
 #include <algorithm>
 
@@ -194,26 +195,364 @@ static void saveResume() {
 
 static AppState s_downloadsReturnState = AppState::SERVER_SELECT;
 
+static std::vector<PlexMediaItem> buildOfflineShows(const std::vector<PlexMediaItem>& episodes) {
+    std::map<std::string, std::vector<PlexMediaItem>> showMap;
+    for (const auto& ep : episodes) {
+        std::string s = !ep.grandparentTitle.empty() ? ep.grandparentTitle : (!ep.parentTitle.empty() ? ep.parentTitle : "Unknown Show");
+        showMap[s].push_back(ep);
+    }
+
+    std::vector<PlexMediaItem> showItems;
+    for (const auto& pair : showMap) {
+        std::set<std::string> seasons;
+        for (const auto& ep : pair.second) {
+            std::string szn = !ep.parentTitle.empty() ? ep.parentTitle : "Season 01";
+            seasons.insert(szn);
+        }
+        PlexMediaItem it;
+        it.title = pair.first;
+        it.type = MediaType::SHOW;
+        it.key = "__offline_show:" + pair.first;
+        it.isOffline = true;
+        it.summary = std::to_string(seasons.size()) + " season" + (seasons.size() == 1 ? "" : "s") + ", " +
+                     std::to_string(pair.second.size()) + " episode" + (pair.second.size() == 1 ? "" : "s");
+        showItems.push_back(it);
+    }
+    std::sort(showItems.begin(), showItems.end(), [](const PlexMediaItem& a, const PlexMediaItem& b) {
+        return a.title < b.title;
+    });
+    return showItems;
+}
+
+static std::vector<PlexMediaItem> buildOfflineSeasons(const std::vector<PlexMediaItem>& episodes, const std::string& targetShow) {
+    std::map<std::string, std::vector<PlexMediaItem>> seasonMap;
+    for (const auto& ep : episodes) {
+        std::string s = !ep.grandparentTitle.empty() ? ep.grandparentTitle : (!ep.parentTitle.empty() ? ep.parentTitle : "Unknown Show");
+        if (s == targetShow) {
+            std::string szn = !ep.parentTitle.empty() ? ep.parentTitle : "Season 01";
+            seasonMap[szn].push_back(ep);
+        }
+    }
+
+    std::vector<PlexMediaItem> seasonItems;
+    for (const auto& pair : seasonMap) {
+        PlexMediaItem it;
+        it.title = pair.first;
+        it.parentTitle = targetShow;
+        it.type = MediaType::SEASON;
+        it.key = "__offline_season:" + targetShow + "/" + pair.first;
+        it.isOffline = true;
+        it.summary = std::to_string(pair.second.size()) + " episode" + (pair.second.size() == 1 ? "" : "s");
+        seasonItems.push_back(it);
+    }
+    std::sort(seasonItems.begin(), seasonItems.end(), [](const PlexMediaItem& a, const PlexMediaItem& b) {
+        return a.title < b.title;
+    });
+    return seasonItems;
+}
+
+static std::vector<PlexMediaItem> buildOfflineEpisodes(const std::vector<PlexMediaItem>& episodes, const std::string& targetShow, const std::string& targetSeason) {
+    std::vector<PlexMediaItem> result;
+    for (const auto& ep : episodes) {
+        std::string s = !ep.grandparentTitle.empty() ? ep.grandparentTitle : (!ep.parentTitle.empty() ? ep.parentTitle : "Unknown Show");
+        std::string szn = !ep.parentTitle.empty() ? ep.parentTitle : "Season 01";
+        if (s == targetShow && szn == targetSeason) {
+            result.push_back(ep);
+        }
+    }
+    std::sort(result.begin(), result.end(), [](const PlexMediaItem& a, const PlexMediaItem& b) {
+        if (a.index != b.index && a.index > 0 && b.index > 0) return a.index < b.index;
+        return a.title < b.title;
+    });
+    return result;
+}
+
+static std::vector<PlexMediaItem> buildOfflineArtists(const std::vector<PlexMediaItem>& tracks) {
+    std::map<std::string, std::vector<PlexMediaItem>> artistMap;
+    for (const auto& trk : tracks) {
+        std::string a = !trk.grandparentTitle.empty() ? trk.grandparentTitle : "Unknown Artist";
+        artistMap[a].push_back(trk);
+    }
+
+    std::vector<PlexMediaItem> artistItems;
+    for (const auto& pair : artistMap) {
+        std::set<std::string> albums;
+        for (const auto& trk : pair.second) {
+            std::string alb = !trk.parentTitle.empty() ? trk.parentTitle : "Unknown Album";
+            albums.insert(alb);
+        }
+        PlexMediaItem it;
+        it.title = pair.first;
+        it.type = MediaType::ARTIST;
+        it.key = "__offline_artist:" + pair.first;
+        it.isOffline = true;
+        it.summary = std::to_string(albums.size()) + " album" + (albums.size() == 1 ? "" : "s") + ", " +
+                     std::to_string(pair.second.size()) + " track" + (pair.second.size() == 1 ? "" : "s");
+        artistItems.push_back(it);
+    }
+    std::sort(artistItems.begin(), artistItems.end(), [](const PlexMediaItem& a, const PlexMediaItem& b) {
+        return a.title < b.title;
+    });
+    return artistItems;
+}
+
+static std::vector<PlexMediaItem> buildOfflineAlbums(const std::vector<PlexMediaItem>& tracks, const std::string& targetArtist) {
+    std::map<std::string, std::vector<PlexMediaItem>> albumMap;
+    for (const auto& trk : tracks) {
+        std::string a = !trk.grandparentTitle.empty() ? trk.grandparentTitle : "Unknown Artist";
+        if (a == targetArtist) {
+            std::string alb = !trk.parentTitle.empty() ? trk.parentTitle : "Unknown Album";
+            albumMap[alb].push_back(trk);
+        }
+    }
+
+    std::vector<PlexMediaItem> albumItems;
+    for (const auto& pair : albumMap) {
+        PlexMediaItem it;
+        it.title = pair.first;
+        it.parentTitle = targetArtist;
+        it.type = MediaType::ALBUM;
+        it.key = "__offline_album:" + targetArtist + "/" + pair.first;
+        it.isOffline = true;
+        int albumYear = 0;
+        for (const auto& trk : pair.second) {
+            if (trk.year > 0) { albumYear = trk.year; break; }
+        }
+        it.year = albumYear;
+        it.summary = std::to_string(pair.second.size()) + " track" + (pair.second.size() == 1 ? "" : "s");
+        albumItems.push_back(it);
+    }
+    std::sort(albumItems.begin(), albumItems.end(), [](const PlexMediaItem& a, const PlexMediaItem& b) {
+        return a.title < b.title;
+    });
+    return albumItems;
+}
+
+static std::vector<PlexMediaItem> buildOfflineTracks(const std::vector<PlexMediaItem>& tracks, const std::string& targetArtist, const std::string& targetAlbum) {
+    std::vector<PlexMediaItem> result;
+    for (const auto& trk : tracks) {
+        std::string a = !trk.grandparentTitle.empty() ? trk.grandparentTitle : "Unknown Artist";
+        std::string alb = !trk.parentTitle.empty() ? trk.parentTitle : "Unknown Album";
+        if (a == targetArtist && alb == targetAlbum) {
+            result.push_back(trk);
+        }
+    }
+    std::sort(result.begin(), result.end(), [](const PlexMediaItem& a, const PlexMediaItem& b) {
+        if (a.index != b.index && a.index > 0 && b.index > 0) return a.index < b.index;
+        return a.title < b.title;
+    });
+    return result;
+}
+
+static std::vector<PlexMediaItem> buildOfflineCategories(const std::vector<PlexMediaItem>& allDownloads) {
+    std::vector<PlexMediaItem> movies;
+    std::vector<PlexMediaItem> episodes;
+    std::vector<PlexMediaItem> tracks;
+
+    for (const auto& it : allDownloads) {
+        if (it.type == MediaType::TRACK) {
+            tracks.push_back(it);
+        } else if (it.type == MediaType::EPISODE) {
+            episodes.push_back(it);
+        } else {
+            movies.push_back(it);
+        }
+    }
+
+    int catCount = (movies.empty() ? 0 : 1) + (episodes.empty() ? 0 : 1) + (tracks.empty() ? 0 : 1);
+    if (catCount == 0) {
+        return {};
+    }
+
+    if (catCount == 1) {
+        if (!movies.empty()) {
+            std::sort(movies.begin(), movies.end(), [](const PlexMediaItem& a, const PlexMediaItem& b) {
+                return a.title < b.title;
+            });
+            return movies;
+        } else if (!episodes.empty()) {
+            return buildOfflineShows(episodes);
+        } else {
+            return buildOfflineArtists(tracks);
+        }
+    }
+
+    std::vector<PlexMediaItem> categories;
+    if (!movies.empty()) {
+        PlexMediaItem cat;
+        cat.title = "Movies (" + std::to_string(movies.size()) + ")";
+        cat.type = MediaType::SHOW;
+        cat.key = "__offline_movies__";
+        cat.isOffline = true;
+        cat.summary = std::to_string(movies.size()) + " downloaded movie" + (movies.size() == 1 ? "" : "s");
+        categories.push_back(cat);
+    }
+    if (!episodes.empty()) {
+        std::set<std::string> uniqueShows;
+        for (const auto& ep : episodes) {
+            std::string s = !ep.grandparentTitle.empty() ? ep.grandparentTitle : (!ep.parentTitle.empty() ? ep.parentTitle : "Unknown Show");
+            uniqueShows.insert(s);
+        }
+        PlexMediaItem cat;
+        cat.title = "TV Shows (" + std::to_string(uniqueShows.size()) + ")";
+        cat.type = MediaType::SHOW;
+        cat.key = "__offline_tv__";
+        cat.isOffline = true;
+        cat.summary = std::to_string(episodes.size()) + " episode" + (episodes.size() == 1 ? "" : "s") + " across " + std::to_string(uniqueShows.size()) + " show" + (uniqueShows.size() == 1 ? "" : "s");
+        categories.push_back(cat);
+    }
+    if (!tracks.empty()) {
+        std::set<std::string> uniqueArtists;
+        for (const auto& trk : tracks) {
+            std::string a = !trk.grandparentTitle.empty() ? trk.grandparentTitle : "Unknown Artist";
+            uniqueArtists.insert(a);
+        }
+        PlexMediaItem cat;
+        cat.title = "Music (" + std::to_string(uniqueArtists.size()) + ")";
+        cat.type = MediaType::ARTIST;
+        cat.key = "__offline_music__";
+        cat.isOffline = true;
+        cat.summary = std::to_string(tracks.size()) + " track" + (tracks.size() == 1 ? "" : "s") + " across " + std::to_string(uniqueArtists.size()) + " artist" + (uniqueArtists.size() == 1 ? "" : "s");
+        categories.push_back(cat);
+    }
+    return categories;
+}
+
+static std::vector<PlexMediaItem> getOfflineItemsForNavKey(const std::string& navKey) {
+    auto allDownloads = g_downloadManager.getDownloadedItems();
+
+    if (navKey == "__offline__") {
+        return buildOfflineCategories(allDownloads);
+    }
+    if (navKey == "__offline_movies__") {
+        std::vector<PlexMediaItem> movies;
+        for (const auto& it : allDownloads) {
+            if (it.type == MediaType::MOVIE) movies.push_back(it);
+        }
+        std::sort(movies.begin(), movies.end(), [](const PlexMediaItem& a, const PlexMediaItem& b) {
+            return a.title < b.title;
+        });
+        return movies;
+    }
+    if (navKey == "__offline_tv__") {
+        std::vector<PlexMediaItem> episodes;
+        for (const auto& it : allDownloads) {
+            if (it.type == MediaType::EPISODE) episodes.push_back(it);
+        }
+        return buildOfflineShows(episodes);
+    }
+    if (navKey.rfind("__offline_show:", 0) == 0) {
+        std::string showName = navKey.substr(15);
+        std::vector<PlexMediaItem> episodes;
+        for (const auto& it : allDownloads) {
+            if (it.type == MediaType::EPISODE) episodes.push_back(it);
+        }
+        return buildOfflineSeasons(episodes, showName);
+    }
+    if (navKey.rfind("__offline_season:", 0) == 0) {
+        std::string rest = navKey.substr(17);
+        size_t slash = rest.find('/');
+        std::string showName = (slash != std::string::npos) ? rest.substr(0, slash) : rest;
+        std::string seasonName = (slash != std::string::npos) ? rest.substr(slash + 1) : "";
+        std::vector<PlexMediaItem> episodes;
+        for (const auto& it : allDownloads) {
+            if (it.type == MediaType::EPISODE) episodes.push_back(it);
+        }
+        return buildOfflineEpisodes(episodes, showName, seasonName);
+    }
+    if (navKey == "__offline_music__") {
+        std::vector<PlexMediaItem> tracks;
+        for (const auto& it : allDownloads) {
+            if (it.type == MediaType::TRACK) tracks.push_back(it);
+        }
+        return buildOfflineArtists(tracks);
+    }
+    if (navKey.rfind("__offline_artist:", 0) == 0) {
+        std::string artistName = navKey.substr(17);
+        std::vector<PlexMediaItem> tracks;
+        for (const auto& it : allDownloads) {
+            if (it.type == MediaType::TRACK) tracks.push_back(it);
+        }
+        return buildOfflineAlbums(tracks, artistName);
+    }
+    if (navKey.rfind("__offline_album:", 0) == 0) {
+        std::string rest = navKey.substr(16);
+        size_t slash = rest.find('/');
+        std::string artistName = (slash != std::string::npos) ? rest.substr(0, slash) : rest;
+        std::string albumName = (slash != std::string::npos) ? rest.substr(slash + 1) : "";
+        std::vector<PlexMediaItem> tracks;
+        for (const auto& it : allDownloads) {
+            if (it.type == MediaType::TRACK) tracks.push_back(it);
+        }
+        return buildOfflineTracks(tracks, artistName, albumName);
+    }
+
+    return allDownloads;
+}
+
+static void deleteOfflineContainer(const std::string& containerKey) {
+    auto allDownloads = g_downloadManager.getDownloadedItems();
+    for (const auto& it : allDownloads) {
+        bool match = false;
+        if (containerKey == "__offline_movies__") {
+            match = (it.type == MediaType::MOVIE);
+        } else if (containerKey == "__offline_tv__") {
+            match = (it.type == MediaType::EPISODE);
+        } else if (containerKey.rfind("__offline_show:", 0) == 0) {
+            std::string show = containerKey.substr(15);
+            std::string itShow = !it.grandparentTitle.empty() ? it.grandparentTitle : (!it.parentTitle.empty() ? it.parentTitle : "Unknown Show");
+            match = (it.type == MediaType::EPISODE && itShow == show);
+        } else if (containerKey.rfind("__offline_season:", 0) == 0) {
+            std::string rest = containerKey.substr(17);
+            size_t slash = rest.find('/');
+            std::string show = (slash != std::string::npos) ? rest.substr(0, slash) : rest;
+            std::string szn = (slash != std::string::npos) ? rest.substr(slash + 1) : "";
+            std::string itShow = !it.grandparentTitle.empty() ? it.grandparentTitle : (!it.parentTitle.empty() ? it.parentTitle : "Unknown Show");
+            std::string itSzn = !it.parentTitle.empty() ? it.parentTitle : "Season 01";
+            match = (it.type == MediaType::EPISODE && itShow == show && itSzn == szn);
+        } else if (containerKey == "__offline_music__") {
+            match = (it.type == MediaType::TRACK);
+        } else if (containerKey.rfind("__offline_artist:", 0) == 0) {
+            std::string artist = containerKey.substr(17);
+            std::string itArtist = !it.grandparentTitle.empty() ? it.grandparentTitle : "Unknown Artist";
+            match = (it.type == MediaType::TRACK && itArtist == artist);
+        } else if (containerKey.rfind("__offline_album:", 0) == 0) {
+            std::string rest = containerKey.substr(16);
+            size_t slash = rest.find('/');
+            std::string artist = (slash != std::string::npos) ? rest.substr(0, slash) : rest;
+            std::string alb = (slash != std::string::npos) ? rest.substr(slash + 1) : "";
+            std::string itArtist = !it.grandparentTitle.empty() ? it.grandparentTitle : "Unknown Artist";
+            std::string itAlb = !it.parentTitle.empty() ? it.parentTitle : "Unknown Album";
+            match = (it.type == MediaType::TRACK && itArtist == artist && itAlb == alb);
+        }
+
+        if (match) {
+            g_downloadManager.deleteDownload(it.ratingKey);
+        }
+    }
+}
+
 static void openDownloadsView(UIRenderer& ui) {
     (void)ui;
     if (g_state != AppState::ITEM_LIST) {
         s_downloadsReturnState = g_state;
     }
-    g_items = g_downloadManager.getDownloadedItems();
+    g_navStack.clear();
+    g_currentNavTitle = "Downloads";
+    g_currentNavKey = "__offline__";
+    g_items = getOfflineItemsForNavKey(g_currentNavKey);
     for (auto& item : g_items) {
         if (g_resumeMap.count(item.ratingKey)) {
             item.viewOffsetMs = std::max(item.viewOffsetMs, g_resumeMap[item.ratingKey]);
         }
     }
-    g_navStack.clear();
-    g_currentNavTitle = "Downloads";
-    g_currentNavKey = "__offline__";
     g_state = AppState::ITEM_LIST;
     g_selectedItemIdx = 0;
     g_scrollOffset = 0;
     int64_t freeBytes = g_downloadManager.getSDFreeSpaceBytes();
     int freeGB = (int)(freeBytes / (1024 * 1024 * 1024));
-    g_statusMsg = "Downloads (" + std::to_string(g_items.size()) + " items, " + std::to_string(freeGB) + " GB free)";
+    auto allDownloads = g_downloadManager.getDownloadedItems();
+    g_statusMsg = "Downloads (" + std::to_string(allDownloads.size()) + " items, " + std::to_string(freeGB) + " GB free)";
 }
 
 static void downloadSingleItem(const PlexMediaItem& item, const PlexServer& server, const PlexAPI& api) {
@@ -245,8 +584,15 @@ static void downloadContainer(const PlexMediaItem& containerItem, const PlexServ
     }
 
     std::vector<std::pair<PlexMediaItem, std::string>> queueList;
-    for (const auto& child : childItems) {
+    for (auto child : childItems) {
         if (!child.ratingKey.empty() && child.key != "__LOAD_MORE__" && !g_downloadManager.isDownloaded(child.ratingKey)) {
+            if (containerItem.type == MediaType::SEASON) {
+                if (child.parentTitle.empty()) child.parentTitle = containerItem.title;
+                if (child.grandparentTitle.empty() && !containerItem.parentTitle.empty()) child.grandparentTitle = containerItem.parentTitle;
+            } else if (containerItem.type == MediaType::ALBUM) {
+                if (child.parentTitle.empty()) child.parentTitle = containerItem.title;
+                if (child.grandparentTitle.empty() && !containerItem.parentTitle.empty()) child.grandparentTitle = containerItem.parentTitle;
+            }
             std::string dlUrl = api.buildTranscodeUrl(server, child, g_config);
             if (!dlUrl.empty()) {
                 queueList.push_back({child, dlUrl});
@@ -266,8 +612,11 @@ static void downloadContainer(const PlexMediaItem& containerItem, const PlexServ
 
 static void downloadCurrentList(const PlexServer& server, const PlexAPI& api, const std::string& title) {
     std::vector<std::pair<PlexMediaItem, std::string>> queueList;
-    for (const auto& child : g_items) {
+    for (auto child : g_items) {
         if (!child.ratingKey.empty() && child.key != "__LOAD_MORE__" && !g_downloadManager.isDownloaded(child.ratingKey)) {
+            if (child.parentTitle.empty() && !title.empty()) {
+                child.parentTitle = title;
+            }
             std::string dlUrl = api.buildTranscodeUrl(server, child, g_config);
             if (!dlUrl.empty()) {
                 queueList.push_back({child, dlUrl});
@@ -1078,11 +1427,12 @@ int main(int argc, char* argv[]) {
 
         if (dlProg.completedCount != lastDlCompletedCount) {
             lastDlCompletedCount = dlProg.completedCount;
-            if (g_currentNavTitle == "Downloads" || g_currentNavKey == "__offline__") {
-                g_items = g_downloadManager.getDownloadedItems();
+            if (g_currentNavTitle == "Downloads" || g_currentNavKey.rfind("__offline", 0) == 0) {
+                g_items = getOfflineItemsForNavKey(g_currentNavKey);
                 int64_t freeBytes = g_downloadManager.getSDFreeSpaceBytes();
                 int freeGB = (int)(freeBytes / (1024 * 1024 * 1024));
-                g_statusMsg = "Downloads (" + std::to_string(g_items.size()) + " items, " + std::to_string(freeGB) + " GB free)";
+                auto allDownloads = g_downloadManager.getDownloadedItems();
+                g_statusMsg = "Downloads (" + std::to_string(allDownloads.size()) + " items, " + std::to_string(freeGB) + " GB free)";
             } else {
                 for (auto& it : g_items) {
                     if (g_downloadManager.isDownloaded(it.ratingKey)) {
@@ -1096,8 +1446,8 @@ int main(int argc, char* argv[]) {
         if (lastDlActive && !dlProg.active) {
             if (dlProg.completed) {
                 g_statusMsg = "Downloaded: " + dlProg.title;
-                if (g_currentNavTitle == "Downloads" || g_currentNavKey == "__offline__") {
-                    g_items = g_downloadManager.getDownloadedItems();
+                if (g_currentNavTitle == "Downloads" || g_currentNavKey.rfind("__offline", 0) == 0) {
+                    g_items = getOfflineItemsForNavKey(g_currentNavKey);
                 } else {
                     for (auto& it : g_items) {
                         if (it.ratingKey == dlProg.ratingKey) {
@@ -1835,39 +2185,55 @@ int main(int argc, char* argv[]) {
                         g_statusMsg = "Failed to load more items";
                     }
                 } else if (isMediaContainer(item.type)) {
-                    g_statusMsg = "Loading " + item.title + "...";
-                    NavHistory hist = { g_items, g_currentNavTitle, g_currentNavKey, g_selectedItemIdx, g_scrollOffset };
-                    g_navStack.push_back(hist);
-                    g_currentNavTitle = item.title;
-                    g_currentNavKey = item.key;
-
-                    std::vector<PlexMediaItem> newItems;
-                    if (api.getItems(g_servers[g_selectedServerIdx], item.key, newItems, 0, 100)) {
-                        for (auto& it : newItems) {
-                            if (g_downloadManager.isDownloaded(it.ratingKey)) {
-                                it.isOffline = true;
-                                it.localFilePath = g_downloadManager.getLocalFilePath(it.ratingKey);
-                            }
+                    if (item.key.rfind("__offline", 0) == 0) {
+                        NavHistory hist = { g_items, g_currentNavTitle, g_currentNavKey, g_selectedItemIdx, g_scrollOffset };
+                        g_navStack.push_back(hist);
+                        g_currentNavTitle = item.title;
+                        g_currentNavKey = item.key;
+                        g_items = getOfflineItemsForNavKey(g_currentNavKey);
+                        for (auto& it : g_items) {
                             if (g_resumeMap.count(it.ratingKey)) {
                                 it.viewOffsetMs = std::max(it.viewOffsetMs, g_resumeMap[it.ratingKey]);
-                            } else if (it.viewOffsetMs > 0) {
-                                g_resumeMap[it.ratingKey] = it.viewOffsetMs;
                             }
                         }
-                        if (newItems.size() == 100) {
-                            PlexMediaItem nextMore;
-                            nextMore.key = "__LOAD_MORE__";
-                            nextMore.title = "--> [Load Next 100 Items...]";
-                            nextMore.type = MediaType::UNKNOWN;
-                            newItems.push_back(nextMore);
-                        }
-                        g_items = std::move(newItems);
                         g_selectedItemIdx = 0;
                         g_scrollOffset = 0;
                         g_statusMsg = "Ready (" + std::to_string(g_items.size()) + " items)";
                     } else {
-                        g_navStack.pop_back();
-                        g_statusMsg = "Failed to load " + item.title;
+                        g_statusMsg = "Loading " + item.title + "...";
+                        NavHistory hist = { g_items, g_currentNavTitle, g_currentNavKey, g_selectedItemIdx, g_scrollOffset };
+                        g_navStack.push_back(hist);
+                        g_currentNavTitle = item.title;
+                        g_currentNavKey = item.key;
+
+                        std::vector<PlexMediaItem> newItems;
+                        if (api.getItems(g_servers[g_selectedServerIdx], item.key, newItems, 0, 100)) {
+                            for (auto& it : newItems) {
+                                if (g_downloadManager.isDownloaded(it.ratingKey)) {
+                                    it.isOffline = true;
+                                    it.localFilePath = g_downloadManager.getLocalFilePath(it.ratingKey);
+                                }
+                                if (g_resumeMap.count(it.ratingKey)) {
+                                    it.viewOffsetMs = std::max(it.viewOffsetMs, g_resumeMap[it.ratingKey]);
+                                } else if (it.viewOffsetMs > 0) {
+                                    g_resumeMap[it.ratingKey] = it.viewOffsetMs;
+                                }
+                            }
+                            if (newItems.size() == 100) {
+                                PlexMediaItem nextMore;
+                                nextMore.key = "__LOAD_MORE__";
+                                nextMore.title = "--> [Load Next 100 Items...]";
+                                nextMore.type = MediaType::UNKNOWN;
+                                newItems.push_back(nextMore);
+                            }
+                            g_items = std::move(newItems);
+                            g_selectedItemIdx = 0;
+                            g_scrollOffset = 0;
+                            g_statusMsg = "Ready (" + std::to_string(g_items.size()) + " items)";
+                        } else {
+                            g_navStack.pop_back();
+                            g_statusMsg = "Failed to load " + item.title;
+                        }
                     }
                 } else {
                     g_state = AppState::DETAIL_VIEW;
@@ -1875,11 +2241,16 @@ int main(int argc, char* argv[]) {
             }
             if ((kDown & KEY_X) && !g_items.empty() && g_selectedItemIdx < (int)g_items.size()) {
                 auto& it = g_items[g_selectedItemIdx];
-                if (it.isOffline || g_downloadManager.isDownloaded(it.ratingKey)) {
-                    g_downloadManager.deleteDownload(it.ratingKey);
-                    g_statusMsg = "Deleted " + it.title;
-                    if ((!g_libraries.empty() && g_selectedLibraryIdx >= 0 && g_selectedLibraryIdx < (int)g_libraries.size() && g_libraries[g_selectedLibraryIdx].key == "__offline__") || g_currentNavTitle == "Downloads" || g_currentNavKey == "__offline__") {
-                        g_items = g_downloadManager.getDownloadedItems();
+                if (it.isOffline || g_downloadManager.isDownloaded(it.ratingKey) || it.key.rfind("__offline", 0) == 0) {
+                    if (isMediaContainer(it.type) && it.key.rfind("__offline", 0) == 0) {
+                        deleteOfflineContainer(it.key);
+                        g_statusMsg = "Deleted " + it.title;
+                    } else {
+                        g_downloadManager.deleteDownload(it.ratingKey);
+                        g_statusMsg = "Deleted " + it.title;
+                    }
+                    if ((!g_libraries.empty() && g_selectedLibraryIdx >= 0 && g_selectedLibraryIdx < (int)g_libraries.size() && g_libraries[g_selectedLibraryIdx].key == "__offline__") || g_currentNavTitle == "Downloads" || g_currentNavKey.rfind("__offline", 0) == 0) {
+                        g_items = getOfflineItemsForNavKey(g_currentNavKey);
                         if (g_selectedItemIdx >= (int)g_items.size()) {
                             g_selectedItemIdx = std::max(0, (int)g_items.size() - 1);
                         }
@@ -1892,7 +2263,7 @@ int main(int argc, char* argv[]) {
                     }
                 }
             }
-            if ((kDown & KEY_Y) && !g_items.empty() && g_selectedItemIdx >= 0 && g_selectedItemIdx < (int)g_items.size() && g_currentNavTitle != "Downloads" && g_currentNavKey != "__offline__") {
+            if ((kDown & KEY_Y) && !g_items.empty() && g_selectedItemIdx >= 0 && g_selectedItemIdx < (int)g_items.size() && g_currentNavTitle != "Downloads" && g_currentNavKey.rfind("__offline", 0) != 0) {
                 if (!g_servers.empty() && g_selectedServerIdx >= 0 && g_selectedServerIdx < (int)g_servers.size()) {
                     auto& it = g_items[g_selectedItemIdx];
                     if (it.type == MediaType::ALBUM || it.type == MediaType::SEASON) {
@@ -1917,7 +2288,7 @@ int main(int argc, char* argv[]) {
                     g_scrollOffset = prev.scrollOffset;
                     g_statusMsg = "Back to " + g_currentNavTitle;
                 } else {
-                    if (g_currentNavTitle == "Downloads" || g_currentNavKey == "__offline__") {
+                    if (g_currentNavTitle == "Downloads" || g_currentNavKey.rfind("__offline", 0) == 0) {
                         g_state = s_downloadsReturnState;
                     } else {
                         g_state = AppState::LIBRARY_LIST;
@@ -2058,8 +2429,8 @@ int main(int argc, char* argv[]) {
                 if (isItemDownloaded) {
                     g_downloadManager.deleteDownload(curItem.ratingKey);
                     g_statusMsg = "Deleted " + curItem.title;
-                    if ((!g_libraries.empty() && g_selectedLibraryIdx >= 0 && g_selectedLibraryIdx < (int)g_libraries.size() && g_libraries[g_selectedLibraryIdx].key == "__offline__") || g_currentNavTitle == "Downloads" || g_currentNavKey == "__offline__") {
-                        g_items = g_downloadManager.getDownloadedItems();
+                    if ((!g_libraries.empty() && g_selectedLibraryIdx >= 0 && g_selectedLibraryIdx < (int)g_libraries.size() && g_libraries[g_selectedLibraryIdx].key == "__offline__") || g_currentNavTitle == "Downloads" || g_currentNavKey.rfind("__offline", 0) == 0) {
+                        g_items = getOfflineItemsForNavKey(g_currentNavKey);
                         if (g_selectedItemIdx >= (int)g_items.size()) {
                             g_selectedItemIdx = std::max(0, (int)g_items.size() - 1);
                         }

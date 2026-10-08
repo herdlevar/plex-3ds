@@ -52,6 +52,10 @@ public:
     bool deleteDownload(const std::string& ratingKey);
     bool updatePlaybackOffset(const std::string& ratingKey, int64_t offsetMs);
 
+    // Path generation
+    static std::string sanitizePathComponent(const std::string& name);
+    static std::string buildLocalMediaPath(const PlexMediaItem& item);
+
     // Status
     bool isDownloading() const { return m_isDownloading.load(); }
     DownloadProgress getProgress();

@@ -14,10 +14,13 @@
 #include <cstring>
 #include <algorithm>
 
-static const std::string BASE_DOWNLOAD_DIR = "sdmc:/3ds/plex-3ds/downloads";
-static const std::string VIDEO_DOWNLOAD_DIR = "sdmc:/3ds/plex-3ds/downloads/videos";
-static const std::string MUSIC_DOWNLOAD_DIR = "sdmc:/3ds/plex-3ds/downloads/music";
-static const std::string META_DOWNLOAD_DIR  = "sdmc:/3ds/plex-3ds/downloads/meta";
+static const std::string BASE_DOWNLOAD_DIR   = "sdmc:/3ds/plex-3ds/downloads";
+static const std::string MOVIES_DOWNLOAD_DIR = "sdmc:/3ds/plex-3ds/downloads/Movies";
+static const std::string TV_DOWNLOAD_DIR     = "sdmc:/3ds/plex-3ds/downloads/TV Shows";
+static const std::string MUSIC_DOWNLOAD_DIR  = "sdmc:/3ds/plex-3ds/downloads/Music";
+static const std::string META_DOWNLOAD_DIR   = "sdmc:/3ds/plex-3ds/downloads/meta";
+static const std::string LEGACY_VIDEO_DIR    = "sdmc:/3ds/plex-3ds/downloads/videos";
+static const std::string LEGACY_MUSIC_DIR    = "sdmc:/3ds/plex-3ds/downloads/music";
 
 static std::string sanitizeKey(const std::string& key) {
     std::string safe;
@@ -27,6 +30,104 @@ static std::string sanitizeKey(const std::string& key) {
         }
     }
     return safe.empty() ? "item" : safe;
+}
+
+std::string DownloadManager::sanitizePathComponent(const std::string& name) {
+    if (name.empty()) return "Unknown";
+    std::string safe;
+    safe.reserve(name.size());
+    for (size_t i = 0; i < name.size(); i++) {
+        char c = name[i];
+        if (c == ':' && (i + 1 < name.size() && name[i + 1] == ' ')) {
+            safe += " -";
+        } else if (c == ':' || c == '/' || c == '\\' || c == '*' || c == '?' ||
+                   c == '"' || c == '<' || c == '>' || c == '|' || (unsigned char)c < 32) {
+            safe += '_';
+        } else {
+            safe += c;
+        }
+    }
+    // Trim leading whitespace, dots, and underscores
+    size_t start = 0;
+    while (start < safe.size() && (safe[start] == ' ' || safe[start] == '.' || safe[start] == '_')) {
+        start++;
+    }
+    // Trim trailing whitespace, dots, and underscores
+    size_t end = safe.size();
+    while (end > start && (safe[end - 1] == ' ' || safe[end - 1] == '.' || safe[end - 1] == '_')) {
+        end--;
+    }
+    if (start >= end) return "Unknown";
+    return safe.substr(start, end - start);
+}
+
+static void createDirectories(const std::string& dirPath) {
+#ifdef __3DS__
+    size_t pos = 0;
+    if (dirPath.rfind("sdmc:/", 0) == 0) {
+        pos = 6;
+    }
+    while ((pos = dirPath.find('/', pos)) != std::string::npos) {
+        std::string sub = dirPath.substr(0, pos);
+        if (!sub.empty() && sub != "sdmc:") {
+            mkdir(sub.c_str(), 0777);
+        }
+        pos++;
+    }
+    mkdir(dirPath.c_str(), 0777);
+#endif
+}
+
+std::string DownloadManager::buildLocalMediaPath(const PlexMediaItem& item) {
+    std::string safeTitle = sanitizePathComponent(item.title);
+    if (safeTitle.empty() || safeTitle == "Unknown") {
+        safeTitle = sanitizeKey(item.ratingKey);
+    }
+
+    if (item.type == MediaType::TRACK) {
+        std::string artist = !item.grandparentTitle.empty() ? item.grandparentTitle : "Unknown Artist";
+        std::string album = !item.parentTitle.empty() ? item.parentTitle : "Unknown Album";
+        std::string safeArtist = sanitizePathComponent(artist);
+        std::string safeAlbum = sanitizePathComponent(album);
+        std::string dir = MUSIC_DOWNLOAD_DIR + "/" + safeArtist + "/" + safeAlbum;
+        createDirectories(dir);
+
+        char numBuf[32];
+        if (item.index > 0) {
+            snprintf(numBuf, sizeof(numBuf), "%02d - ", item.index);
+            return dir + "/" + numBuf + safeTitle + ".mp3";
+        } else {
+            return dir + "/" + safeTitle + ".mp3";
+        }
+    } else if (item.type == MediaType::EPISODE || (!item.grandparentTitle.empty() && item.type != MediaType::MOVIE)) {
+        std::string show = !item.grandparentTitle.empty() ? item.grandparentTitle : (!item.parentTitle.empty() ? item.parentTitle : "Unknown Show");
+        std::string season = !item.parentTitle.empty() ? item.parentTitle : "Season 01";
+        std::string safeShow = sanitizePathComponent(show);
+        std::string safeSeason = sanitizePathComponent(season);
+        std::string dir = TV_DOWNLOAD_DIR + "/" + safeShow + "/" + safeSeason;
+        createDirectories(dir);
+
+        char numBuf[32];
+        if (item.index > 0) {
+            snprintf(numBuf, sizeof(numBuf), "%02d - ", item.index);
+            return dir + "/" + numBuf + safeTitle + ".mkv";
+        } else {
+            return dir + "/" + safeTitle + ".mkv";
+        }
+    } else {
+        std::string folderName = safeTitle;
+        if (item.year > 0) {
+            folderName += " (" + std::to_string(item.year) + ")";
+        }
+        std::string dir = MOVIES_DOWNLOAD_DIR + "/" + folderName;
+        createDirectories(dir);
+
+        std::string fileName = safeTitle;
+        if (item.year > 0) {
+            fileName += " (" + std::to_string(item.year) + ")";
+        }
+        return dir + "/" + fileName + ".mkv";
+    }
 }
 
 DownloadManager::DownloadManager() {}
@@ -40,9 +141,12 @@ void DownloadManager::ensureDirectories() {
     mkdir("sdmc:/3ds", 0777);
     mkdir("sdmc:/3ds/plex-3ds", 0777);
     mkdir(BASE_DOWNLOAD_DIR.c_str(), 0777);
-    mkdir(VIDEO_DOWNLOAD_DIR.c_str(), 0777);
+    mkdir(MOVIES_DOWNLOAD_DIR.c_str(), 0777);
+    mkdir(TV_DOWNLOAD_DIR.c_str(), 0777);
     mkdir(MUSIC_DOWNLOAD_DIR.c_str(), 0777);
     mkdir(META_DOWNLOAD_DIR.c_str(), 0777);
+    mkdir(LEGACY_VIDEO_DIR.c_str(), 0777);
+    mkdir(LEGACY_MUSIC_DIR.c_str(), 0777);
 #endif
 }
 
@@ -136,17 +240,15 @@ std::vector<PlexMediaItem> DownloadManager::getDownloadedItems() {
                 if (lp.empty() || access(lp.c_str(), R_OK) != 0) {
                     std::string keyBase = fname.substr(0, fname.length() - 5);
                     std::string cand1 = MUSIC_DOWNLOAD_DIR + "/" + keyBase + ".mp3";
-                    std::string cand2 = VIDEO_DOWNLOAD_DIR + "/" + keyBase + ".mkv";
-                    std::string cand3 = BASE_DOWNLOAD_DIR + "/" + keyBase + ".mp3";
-                    std::string cand4 = BASE_DOWNLOAD_DIR + "/temp_" + keyBase + ".mp3";
-                    std::string cand5 = MUSIC_DOWNLOAD_DIR + "/.temp_" + keyBase + ".mp3";
-                    std::string cand6 = VIDEO_DOWNLOAD_DIR + "/.temp_" + keyBase + ".mkv";
+                    std::string cand2 = LEGACY_VIDEO_DIR + "/" + keyBase + ".mkv";
+                    std::string cand3 = LEGACY_MUSIC_DIR + "/" + keyBase + ".mp3";
+                    std::string cand4 = BASE_DOWNLOAD_DIR + "/" + keyBase + ".mp3";
+                    std::string cand5 = BASE_DOWNLOAD_DIR + "/" + keyBase + ".mkv";
                     if (access(cand1.c_str(), R_OK) == 0) lp = cand1;
                     else if (access(cand2.c_str(), R_OK) == 0) lp = cand2;
                     else if (access(cand3.c_str(), R_OK) == 0) lp = cand3;
                     else if (access(cand4.c_str(), R_OK) == 0) lp = cand4;
                     else if (access(cand5.c_str(), R_OK) == 0) lp = cand5;
-                    else if (access(cand6.c_str(), R_OK) == 0) lp = cand6;
                 }
 
                 // Verify local media file exists and has valid content (> 4KB)
@@ -178,7 +280,26 @@ std::vector<PlexMediaItem> DownloadManager::getDownloadedItems() {
 
                     std::string tStr = (type && type->valuestring) ? type->valuestring : "";
                     if (tStr == "track") it.type = MediaType::TRACK;
-                    else it.type = MediaType::MOVIE;
+                    else if (tStr == "episode") it.type = MediaType::EPISODE;
+                    else if (tStr == "movie") {
+                        if (!it.grandparentTitle.empty() || it.parentTitle.find("Season") != std::string::npos) {
+                            it.type = MediaType::EPISODE;
+                        } else {
+                            it.type = MediaType::MOVIE;
+                        }
+                    } else if (tStr == "show") it.type = MediaType::SHOW;
+                    else if (tStr == "season") it.type = MediaType::SEASON;
+                    else if (tStr == "artist") it.type = MediaType::ARTIST;
+                    else if (tStr == "album") it.type = MediaType::ALBUM;
+                    else {
+                        if (!it.grandparentTitle.empty() || it.parentTitle.find("Season") != std::string::npos) {
+                            it.type = MediaType::EPISODE;
+                        } else if (lp.rfind(".mp3") == lp.length() - 4) {
+                            it.type = MediaType::TRACK;
+                        } else {
+                            it.type = MediaType::MOVIE;
+                        }
+                    }
 
                     it.isOffline = true;
                     it.localFilePath = lp;
@@ -193,15 +314,27 @@ std::vector<PlexMediaItem> DownloadManager::getDownloadedItems() {
     }
     closedir(dir);
 
-    // Scan directories for any media files missing meta json files
-    auto scanDirForOrphans = [&](const std::string& dirPath, MediaType mType, const std::string& ext) {
+    // Recursively scan directories for any media files missing meta json files
+    auto scanDirRecursive = [&](auto& self, const std::string& dirPath, int depth, MediaType defaultType, const std::string& parentFolder, const std::string& gpFolder) -> void {
+        if (depth <= 0) return;
         DIR* d = opendir(dirPath.c_str());
         if (!d) return;
         struct dirent* e;
         while ((e = readdir(d)) != nullptr) {
             std::string name = e->d_name;
-            if (name.length() > ext.length() && name.rfind(ext) == name.length() - ext.length()) {
-                std::string fullPath = dirPath + "/" + name;
+            if (name == "." || name == "..") continue;
+            std::string fullPath = dirPath + "/" + name;
+            struct stat st;
+            if (stat(fullPath.c_str(), &st) != 0) continue;
+
+            if (S_ISDIR(st.st_mode)) {
+                self(self, fullPath, depth - 1, defaultType, name, parentFolder);
+            } else if (S_ISREG(st.st_mode) && st.st_size > 4096) {
+                bool isMkv = (name.length() > 4 && name.rfind(".mkv") == name.length() - 4);
+                bool isMp4 = (name.length() > 4 && name.rfind(".mp4") == name.length() - 4);
+                bool isMp3 = (name.length() > 4 && name.rfind(".mp3") == name.length() - 4);
+                if (!isMkv && !isMp4 && !isMp3) continue;
+
                 bool alreadyIn = false;
                 for (const auto& existing : items) {
                     if (existing.localFilePath == fullPath) {
@@ -209,32 +342,44 @@ std::vector<PlexMediaItem> DownloadManager::getDownloadedItems() {
                         break;
                     }
                 }
-                if (!alreadyIn) {
-                    struct stat st;
-                    if (stat(fullPath.c_str(), &st) == 0 && st.st_size > 4096) {
-                        std::string base = name.substr(0, name.length() - ext.length());
-                        if (base.rfind(".temp_", 0) == 0) base = base.substr(6);
-                        if (base.rfind("temp_", 0) == 0) base = base.substr(5);
-                        PlexMediaItem it;
-                        it.ratingKey = base;
-                        it.title = base;
-                        it.type = mType;
-                        it.isOffline = true;
-                        it.localFilePath = fullPath;
-                        it.partKey = fullPath;
-                        it.key = fullPath;
-                        it.localFileSize = st.st_size;
-                        items.push_back(it);
-                    }
+                if (alreadyIn) continue;
+
+                std::string base = name.substr(0, name.rfind('.'));
+                if (base.rfind(".temp_", 0) == 0) base = base.substr(6);
+                if (base.rfind("temp_", 0) == 0) base = base.substr(5);
+
+                PlexMediaItem it;
+                it.ratingKey = base;
+                it.title = base;
+                it.isOffline = true;
+                it.localFilePath = fullPath;
+                it.partKey = fullPath;
+                it.key = fullPath;
+                it.localFileSize = st.st_size;
+
+                if (isMp3) {
+                    it.type = MediaType::TRACK;
+                    if (!parentFolder.empty()) it.parentTitle = parentFolder;
+                    if (!gpFolder.empty()) it.grandparentTitle = gpFolder;
+                } else if (defaultType == MediaType::EPISODE || !gpFolder.empty()) {
+                    it.type = MediaType::EPISODE;
+                    if (!parentFolder.empty()) it.parentTitle = parentFolder;
+                    if (!gpFolder.empty()) it.grandparentTitle = gpFolder;
+                } else {
+                    it.type = MediaType::MOVIE;
                 }
+                items.push_back(it);
             }
         }
         closedir(d);
     };
 
-    scanDirForOrphans(MUSIC_DOWNLOAD_DIR, MediaType::TRACK, ".mp3");
-    scanDirForOrphans(VIDEO_DOWNLOAD_DIR, MediaType::MOVIE, ".mkv");
-    scanDirForOrphans(BASE_DOWNLOAD_DIR, MediaType::TRACK, ".mp3");
+    scanDirRecursive(scanDirRecursive, MOVIES_DOWNLOAD_DIR, 3, MediaType::MOVIE, "", "");
+    scanDirRecursive(scanDirRecursive, TV_DOWNLOAD_DIR, 4, MediaType::EPISODE, "", "");
+    scanDirRecursive(scanDirRecursive, MUSIC_DOWNLOAD_DIR, 4, MediaType::TRACK, "", "");
+    scanDirRecursive(scanDirRecursive, LEGACY_VIDEO_DIR, 2, MediaType::MOVIE, "", "");
+    scanDirRecursive(scanDirRecursive, LEGACY_MUSIC_DIR, 2, MediaType::TRACK, "", "");
+    scanDirRecursive(scanDirRecursive, BASE_DOWNLOAD_DIR, 1, MediaType::TRACK, "", "");
     return items;
 }
 
@@ -266,6 +411,17 @@ bool DownloadManager::deleteDownload(const std::string& ratingKey) {
 
     if (!localPath.empty()) {
         remove(localPath.c_str());
+        // Clean up empty parent folder (e.g. Season or Album) and grandparent folder (e.g. Show or Artist)
+        size_t lastSlash = localPath.rfind('/');
+        if (lastSlash != std::string::npos) {
+            std::string parentDir = localPath.substr(0, lastSlash);
+            rmdir(parentDir.c_str());
+            size_t prevSlash = parentDir.rfind('/');
+            if (prevSlash != std::string::npos) {
+                std::string gpDir = parentDir.substr(0, prevSlash);
+                rmdir(gpDir.c_str());
+            }
+        }
     }
     remove(metaPath.c_str());
     return true;
@@ -319,7 +475,16 @@ void DownloadManager::saveMetadata(const PlexMediaItem& item, const std::string&
     cJSON_AddStringToObject(root, "parentTitle", item.parentTitle.c_str());
     cJSON_AddStringToObject(root, "grandparentTitle", item.grandparentTitle.c_str());
     cJSON_AddStringToObject(root, "summary", item.summary.c_str());
-    cJSON_AddStringToObject(root, "type", (item.type == MediaType::TRACK ? "track" : "movie"));
+
+    const char* tStr = "movie";
+    if (item.type == MediaType::TRACK) tStr = "track";
+    else if (item.type == MediaType::EPISODE) tStr = "episode";
+    else if (item.type == MediaType::SHOW) tStr = "show";
+    else if (item.type == MediaType::SEASON) tStr = "season";
+    else if (item.type == MediaType::ARTIST) tStr = "artist";
+    else if (item.type == MediaType::ALBUM) tStr = "album";
+    cJSON_AddStringToObject(root, "type", tStr);
+
     cJSON_AddStringToObject(root, "localPath", filePath.c_str());
     cJSON_AddNumberToObject(root, "fileSize", (double)fileSize);
     cJSON_AddNumberToObject(root, "durationMs", (double)item.durationMs);
@@ -384,10 +549,7 @@ void DownloadManager::downloadLoop() {
             m_progress.failed = false;
         }
 
-        std::string safeKey = sanitizeKey(current.item.ratingKey);
-        std::string ext = (current.item.type == MediaType::TRACK) ? ".mp3" : ".mkv";
-        std::string folder = (current.item.type == MediaType::TRACK) ? MUSIC_DOWNLOAD_DIR : VIDEO_DOWNLOAD_DIR;
-        std::string finalPath = folder + "/" + safeKey + ext;
+        std::string finalPath = buildLocalMediaPath(current.item);
 
         FILE* outFile = fopen(finalPath.c_str(), "wb");
         if (!outFile) {

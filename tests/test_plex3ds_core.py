@@ -346,6 +346,195 @@ class TestPlex3DSHomeButtonPolicy(unittest.TestCase):
         self.assertTrue(app_exiting)
 
 
+def sanitize_path_component(name):
+    if not name:
+        return "Unknown"
+    safe = ""
+    i = 0
+    while i < len(name):
+        c = name[i]
+        if c == ':' and i + 1 < len(name) and name[i + 1] == ' ':
+            safe += " -"
+        elif c in r'/\:*?"<>|' or ord(c) < 32:
+            safe += '_'
+        else:
+            safe += c
+        i += 1
+    safe = safe.strip(' ._')
+    return safe if safe else "Unknown"
+
+
+def build_local_media_path(item):
+    safe_title = sanitize_path_component(item.get("title", ""))
+    if not safe_title or safe_title == "Unknown":
+        safe_title = sanitize_key(item.get("ratingKey", "item"))
+
+    media_type = item.get("type", "unknown")
+    grandparent = item.get("grandparentTitle", "")
+    parent = item.get("parentTitle", "")
+    index = item.get("index", 0)
+    year = item.get("year", 0)
+
+    if media_type == "track":
+        artist = grandparent if grandparent else "Unknown Artist"
+        album = parent if parent else "Unknown Album"
+        safe_artist = sanitize_path_component(artist)
+        safe_album = sanitize_path_component(album)
+        dir_path = f"sdmc:/3ds/plex-3ds/downloads/Music/{safe_artist}/{safe_album}"
+        if index > 0:
+            return f"{dir_path}/{index:02d} - {safe_title}.mp3"
+        return f"{dir_path}/{safe_title}.mp3"
+    elif media_type == "episode" or (grandparent and media_type != "movie"):
+        show = grandparent if grandparent else (parent if parent else "Unknown Show")
+        season = parent if parent else "Season 01"
+        safe_show = sanitize_path_component(show)
+        safe_season = sanitize_path_component(season)
+        dir_path = f"sdmc:/3ds/plex-3ds/downloads/TV Shows/{safe_show}/{safe_season}"
+        if index > 0:
+            return f"{dir_path}/{index:02d} - {safe_title}.mkv"
+        return f"{dir_path}/{safe_title}.mkv"
+    else:
+        folder_name = safe_title
+        if year > 0:
+            folder_name += f" ({year})"
+        dir_path = f"sdmc:/3ds/plex-3ds/downloads/Movies/{folder_name}"
+        file_name = safe_title
+        if year > 0:
+            file_name += f" ({year})"
+        return f"{dir_path}/{file_name}.mkv"
+
+
+class TestPlex3DSHierarchicalStorage(unittest.TestCase):
+    def test_sanitize_path_component(self):
+        self.assertEqual(sanitize_path_component("Inception"), "Inception")
+        self.assertEqual(sanitize_path_component("Star Wars: Episode IV"), "Star Wars - Episode IV")
+        self.assertEqual(sanitize_path_component("AC/DC"), "AC_DC")
+        self.assertEqual(sanitize_path_component("What If...?"), "What If")
+        self.assertEqual(sanitize_path_component("...Test..."), "Test")
+        self.assertEqual(sanitize_path_component(""), "Unknown")
+        self.assertEqual(sanitize_path_component("   "), "Unknown")
+        self.assertEqual(sanitize_path_component(None), "Unknown")
+
+    def test_movie_path_with_year(self):
+        item = {
+            "title": "Inception",
+            "year": 2010,
+            "type": "movie",
+            "ratingKey": "101"
+        }
+        path = build_local_media_path(item)
+        self.assertEqual(path, "sdmc:/3ds/plex-3ds/downloads/Movies/Inception (2010)/Inception (2010).mkv")
+
+    def test_movie_path_without_year(self):
+        item = {
+            "title": "Home Video",
+            "year": 0,
+            "type": "movie",
+            "ratingKey": "102"
+        }
+        path = build_local_media_path(item)
+        self.assertEqual(path, "sdmc:/3ds/plex-3ds/downloads/Movies/Home Video/Home Video.mkv")
+
+    def test_tv_episode_path_with_index(self):
+        item = {
+            "title": "Pilot",
+            "grandparentTitle": "Breaking Bad",
+            "parentTitle": "Season 1",
+            "index": 1,
+            "type": "episode",
+            "ratingKey": "201"
+        }
+        path = build_local_media_path(item)
+        self.assertEqual(path, "sdmc:/3ds/plex-3ds/downloads/TV Shows/Breaking Bad/Season 1/01 - Pilot.mkv")
+
+    def test_tv_episode_path_without_index(self):
+        item = {
+            "title": "Special Episode",
+            "grandparentTitle": "Doctor Who",
+            "parentTitle": "Specials",
+            "index": 0,
+            "type": "episode",
+            "ratingKey": "202"
+        }
+        path = build_local_media_path(item)
+        self.assertEqual(path, "sdmc:/3ds/plex-3ds/downloads/TV Shows/Doctor Who/Specials/Special Episode.mkv")
+
+    def test_music_track_path_with_index(self):
+        item = {
+            "title": "One More Time",
+            "grandparentTitle": "Daft Punk",
+            "parentTitle": "Discovery",
+            "index": 1,
+            "type": "track",
+            "ratingKey": "301"
+        }
+        path = build_local_media_path(item)
+        self.assertEqual(path, "sdmc:/3ds/plex-3ds/downloads/Music/Daft Punk/Discovery/01 - One More Time.mp3")
+
+    def test_music_track_path_without_index(self):
+        item = {
+            "title": "Single Track",
+            "grandparentTitle": "Radiohead",
+            "parentTitle": "Singles",
+            "index": 0,
+            "type": "track",
+            "ratingKey": "302"
+        }
+        path = build_local_media_path(item)
+        self.assertEqual(path, "sdmc:/3ds/plex-3ds/downloads/Music/Radiohead/Singles/Single Track.mp3")
+
+
+class TestPlex3DSOfflineNavigation(unittest.TestCase):
+    def setUp(self):
+        self.movie1 = {"title": "Inception", "year": 2010, "type": "movie", "ratingKey": "m1"}
+        self.movie2 = {"title": "The Matrix", "year": 1999, "type": "movie", "ratingKey": "m2"}
+        self.ep1 = {"title": "Pilot", "grandparentTitle": "Breaking Bad", "parentTitle": "Season 1", "index": 1, "type": "episode", "ratingKey": "e1"}
+        self.ep2 = {"title": "Cat's in the Bag", "grandparentTitle": "Breaking Bad", "parentTitle": "Season 1", "index": 2, "type": "episode", "ratingKey": "e2"}
+        self.ep3 = {"title": "Seven Thirty-Seven", "grandparentTitle": "Breaking Bad", "parentTitle": "Season 2", "index": 1, "type": "episode", "ratingKey": "e3"}
+        self.trk1 = {"title": "One More Time", "grandparentTitle": "Daft Punk", "parentTitle": "Discovery", "index": 1, "type": "track", "ratingKey": "t1"}
+        self.trk2 = {"title": "Aerodynamic", "grandparentTitle": "Daft Punk", "parentTitle": "Discovery", "index": 2, "type": "track", "ratingKey": "t2"}
+
+    def test_multi_category_root_shows_category_folders(self):
+        all_items = [self.movie1, self.ep1, self.trk1]
+        movies = [it for it in all_items if it["type"] == "movie"]
+        episodes = [it for it in all_items if it["type"] == "episode"]
+        tracks = [it for it in all_items if it["type"] == "track"]
+
+        cat_count = (1 if movies else 0) + (1 if episodes else 0) + (1 if tracks else 0)
+        self.assertEqual(cat_count, 3)
+
+    def test_single_category_movies_shows_movies_directly(self):
+        all_items = [self.movie1, self.movie2]
+        movies = [it for it in all_items if it["type"] == "movie"]
+        episodes = [it for it in all_items if it["type"] == "episode"]
+        tracks = [it for it in all_items if it["type"] == "track"]
+
+        cat_count = (1 if movies else 0) + (1 if episodes else 0) + (1 if tracks else 0)
+        self.assertEqual(cat_count, 1)
+        self.assertEqual(len(movies), 2)
+
+    def test_tv_show_seasons_grouping(self):
+        episodes = [self.ep1, self.ep2, self.ep3]
+        target_show = "Breaking Bad"
+        seasons = set(ep["parentTitle"] for ep in episodes if ep["grandparentTitle"] == target_show)
+        self.assertEqual(seasons, {"Season 1", "Season 2"})
+
+        s1_episodes = sorted([ep for ep in episodes if ep["grandparentTitle"] == target_show and ep["parentTitle"] == "Season 1"], key=lambda x: x["index"])
+        self.assertEqual(len(s1_episodes), 2)
+        self.assertEqual(s1_episodes[0]["title"], "Pilot")
+        self.assertEqual(s1_episodes[1]["title"], "Cat's in the Bag")
+
+    def test_music_album_tracks_grouping(self):
+        tracks = [self.trk2, self.trk1]
+        target_artist = "Daft Punk"
+        target_album = "Discovery"
+        album_tracks = sorted([t for t in tracks if t["grandparentTitle"] == target_artist and t["parentTitle"] == target_album], key=lambda x: x["index"])
+        self.assertEqual(len(album_tracks), 2)
+        self.assertEqual(album_tracks[0]["title"], "One More Time")
+        self.assertEqual(album_tracks[1]["title"], "Aerodynamic")
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
 
