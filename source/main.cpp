@@ -1674,7 +1674,7 @@ int main(int argc, char* argv[]) {
                            !g_config.authToken.empty(),
                            g_pinCode);
 
-        int selectedIdx = (g_state == AppState::ITEM_LIST ? g_selectedItemIdx : 
+        int selectedIdx = ((g_state == AppState::ITEM_LIST || g_state == AppState::DETAIL_VIEW) ? g_selectedItemIdx : 
                            g_state == AppState::LIBRARY_LIST ? g_selectedLibraryIdx : g_selectedServerIdx);
 
         std::string dlBadge = "";

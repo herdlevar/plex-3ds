@@ -1225,6 +1225,18 @@ class TestPlex3DSSecurityAuditing(unittest.TestCase):
         self.assertTrue(canonical_ca_path.startswith("sdmc:/"))
         self.assertFalse(canonical_ca_path.startswith("/etc/"))
 
+    def test_detail_view_selected_index_resolution(self):
+        # Simulates main loop selectedIdx resolution across states: DETAIL_VIEW must resolve to selected_item_idx
+        def resolve_selected_index(state, selected_item_idx, selected_library_idx, selected_server_idx):
+            return (selected_item_idx if (state in ("ITEM_LIST", "DETAIL_VIEW")) else
+                    selected_library_idx if state == "LIBRARY_LIST" else
+                    selected_server_idx)
+
+        self.assertEqual(resolve_selected_index("ITEM_LIST", 240, 2, 0), 240)
+        self.assertEqual(resolve_selected_index("DETAIL_VIEW", 240, 2, 0), 240)
+        self.assertEqual(resolve_selected_index("LIBRARY_LIST", 240, 2, 0), 2)
+        self.assertEqual(resolve_selected_index("SERVER_SELECT", 240, 2, 1), 1)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
