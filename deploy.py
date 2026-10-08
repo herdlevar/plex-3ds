@@ -45,8 +45,34 @@ def deploy():
         speed = (size / 1024) / max(0.01, elapsed)
         print(f" Done in {elapsed:.2f}s ({speed:.1f} KB/s)")
 
+    if os.path.exists("Plex3DS.cia"):
+        try:
+            ftp.cwd("/")
+        except Exception:
+            pass
+        try:
+            ftp.mkd("cias")
+        except Exception:
+            pass
+        try:
+            ftp.cwd("/cias")
+        except Exception:
+            pass
+
+        size = os.path.getsize("Plex3DS.cia")
+        print(f"Uploading Plex3DS.cia to /cias/ ({size / (1024*1024):.2f} MB)...", end="", flush=True)
+        t0 = time.time()
+        with open("Plex3DS.cia", "rb") as f:
+            ftp.storbinary("STOR Plex3DS.cia", f)
+        elapsed = time.time() - t0
+        speed = (size / 1024) / max(0.01, elapsed)
+        print(f" Done in {elapsed:.2f}s ({speed:.1f} KB/s)")
+
     ftp.quit()
-    print("\n[SUCCESS] Deployed to /3ds/Plex3DS/! You can now launch Plex3DS from Homebrew Launcher.")
+    print("\n[SUCCESS] Deployed!")
+    print(" - 3DSX: Available in Homebrew Launcher (/3ds/Plex3DS/)")
+    if os.path.exists("Plex3DS.cia"):
+        print(" - CIA: Uploaded to /cias/Plex3DS.cia (install via FBI to add to HOME Menu)")
     return True
 
 if __name__ == "__main__":

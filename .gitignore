@@ -8,8 +8,10 @@ build/
 *.o
 *.d
 *.bin
+*.bnr
 *.cro
 *.crs
+tools/bin/
 
 # User Credentials, Configuration & Downloads
 config.json

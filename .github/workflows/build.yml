@@ -32,6 +32,19 @@ jobs:
         run: |
           make -j$(nproc)
 
+      - name: Build CIA Package
+        run: |
+          curl -sL https://github.com/3DSGuy/Project_CTR/releases/download/makerom-v0.19.0/makerom-v0.19.0-ubuntu_x86_64.zip -o makerom.zip
+          unzip -q makerom.zip -d /usr/local/bin
+          chmod +x /usr/local/bin/makerom
+
+          curl -sL https://github.com/carstene1ns/3ds-bannertool/releases/download/1.2.3/bannertool-1.2.3-linux.tar.gz -o bannertool.tar.gz
+          tar -xzf bannertool.tar.gz -C /usr/local/bin bannertool
+          chmod +x /usr/local/bin/bannertool
+
+          bannertool makebanner -i banner.png -a silent.wav -o banner.bnr
+          makerom -f cia -o Plex3DS.cia -elf Plex3DS.elf -rsf Plex3DS.rsf -icon Plex3DS.smdh -banner banner.bnr -exefslogo -target t
+
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -39,6 +52,7 @@ jobs:
           path: |
             Plex3DS.3dsx
             Plex3DS.smdh
+            Plex3DS.cia
 
   release:
     name: Publish GitHub Release
@@ -60,6 +74,7 @@ jobs:
           files: |
             Plex3DS.3dsx
             Plex3DS.smdh
+            Plex3DS.cia
           draft: false
           prerelease: false
           generate_release_notes: true
