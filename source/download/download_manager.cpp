@@ -170,6 +170,34 @@ bool DownloadManager::isDownloaded(const std::string& ratingKey) const {
     return true;
 }
 
+bool DownloadManager::isQueued(const std::string& ratingKey) const {
+    if (ratingKey.empty()) return false;
+    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(m_queueMutex));
+    if (m_isDownloading.load() && m_currentItem.ratingKey == ratingKey) {
+        return true;
+    }
+    for (const auto& q : m_queue) {
+        if (q.item.ratingKey == ratingKey) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int DownloadManager::getQueuePosition(const std::string& ratingKey) const {
+    if (ratingKey.empty()) return 0;
+    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(m_queueMutex));
+    if (m_isDownloading.load() && m_currentItem.ratingKey == ratingKey) {
+        return 1;
+    }
+    for (size_t i = 0; i < m_queue.size(); i++) {
+        if (m_queue[i].item.ratingKey == ratingKey) {
+            return (m_isDownloading.load() ? 2 : 1) + (int)i;
+        }
+    }
+    return 0;
+}
+
 std::string DownloadManager::getLocalFilePath(const std::string& ratingKey) const {
     if (ratingKey.empty()) return "";
     std::string safeKey = sanitizeKey(ratingKey);
@@ -529,9 +557,6 @@ void DownloadManager::downloadLoop() {
         {
             std::lock_guard<std::mutex> lock(m_queueMutex);
             if (m_queue.empty()) {
-                m_isDownloading = false;
-                m_totalQueueCount = 0;
-                m_currentQueueIndex = 0;
                 break;
             }
             current = m_queue.front();
@@ -734,7 +759,13 @@ void DownloadManager::downloadLoop() {
         }
     }
 
-    m_isDownloading = false;
+    {
+        std::lock_guard<std::mutex> lock(m_queueMutex);
+        m_isDownloading = false;
+        m_totalQueueCount = 0;
+        m_currentQueueIndex = 0;
+        m_currentItem = PlexMediaItem();
+    }
     {
         std::lock_guard<std::mutex> lock(m_progressMutex);
         m_progress.active = false;
@@ -811,6 +842,20 @@ int DownloadManager::queueDownloads(const std::vector<std::pair<PlexMediaItem, s
             return 0;
         }
 #endif
+    } else {
+        // Already downloading: update progress queueCount immediately so UI reflects it on next frame
+        std::lock_guard<std::mutex> lock(m_progressMutex);
+        m_progress.queueCount = m_totalQueueCount;
+        if (m_progress.active) {
+            std::string qInfo = "(" + std::to_string(m_progress.queueIndex) + "/" + std::to_string(m_totalQueueCount) + ") ";
+            if (m_progress.totalBytes > 0) {
+                double mbNow = (double)m_progress.bytesDownloaded / (1024.0 * 1024.0);
+                double mbTot = (double)m_progress.totalBytes / (1024.0 * 1024.0);
+                char buf[64];
+                snprintf(buf, sizeof(buf), "%.1f / %.1f MB (%d%%)", mbNow, mbTot, m_progress.percent);
+                m_progress.statusText = qInfo + buf;
+            }
+        }
     }
     return added;
 }
@@ -835,6 +880,27 @@ void DownloadManager::cancelDownload() {
         std::lock_guard<std::mutex> lock(m_progressMutex);
         m_progress.active = false;
     }
+}
+
+bool DownloadManager::cancelQueuedItem(const std::string& ratingKey) {
+    if (ratingKey.empty()) return false;
+    std::lock_guard<std::mutex> lock(m_queueMutex);
+    for (auto it = m_queue.begin(); it != m_queue.end(); ++it) {
+        if (it->item.ratingKey == ratingKey) {
+            m_queue.erase(it);
+            if (m_totalQueueCount > 0) m_totalQueueCount--;
+            {
+                std::lock_guard<std::mutex> pLock(m_progressMutex);
+                m_progress.queueCount = m_totalQueueCount;
+            }
+            return true;
+        }
+    }
+    if (m_isDownloading.load() && m_currentItem.ratingKey == ratingKey) {
+        cancelDownload();
+        return true;
+    }
+    return false;
 }
 
 DownloadProgress DownloadManager::getProgress() {

@@ -40,6 +40,8 @@ public:
 
     // Query downloads
     bool isDownloaded(const std::string& ratingKey) const;
+    bool isQueued(const std::string& ratingKey) const;
+    int getQueuePosition(const std::string& ratingKey) const;
     std::string getLocalFilePath(const std::string& ratingKey) const;
     std::vector<PlexMediaItem> getDownloadedItems();
     int64_t getSDFreeSpaceBytes();
@@ -49,6 +51,7 @@ public:
     bool startDownload(const PlexMediaItem& item, const std::string& downloadUrl);
     int queueDownloads(const std::vector<std::pair<PlexMediaItem, std::string>>& items);
     void cancelDownload();
+    bool cancelQueuedItem(const std::string& ratingKey);
     bool deleteDownload(const std::string& ratingKey);
     bool updatePlaybackOffset(const std::string& ratingKey, int64_t offsetMs);
 

@@ -384,7 +384,8 @@ void UIRenderer::renderBottomScreen(AppState state,
                                     bool subtitlesEnabled,
                                     const std::string& subtitleName,
                                     const std::string& username,
-                                    bool isLoggedIn) {
+                                    bool isLoggedIn,
+                                    bool isItemQueued) {
 #ifdef __3DS__
     C2D_TargetClear(m_bottomTarget, COLOR_PANEL_BG);
     C2D_SceneBegin(m_bottomTarget);
@@ -560,12 +561,20 @@ void UIRenderer::renderBottomScreen(AppState state,
         }
     } else if (state == AppState::ITEM_LIST) {
         std::string headerTitle = listTitle.empty() ? "MEDIA ITEMS" : listTitle;
-        if (headerTitle.length() > 22) headerTitle = headerTitle.substr(0, 19) + "...";
+        bool canDLAll = (listTitle != "Downloads" && !items.empty() && (items[0].type == MediaType::TRACK || items[0].type == MediaType::EPISODE));
+        if (canDLAll && !dlBadge.empty()) {
+            if (headerTitle.length() > 14) headerTitle = headerTitle.substr(0, 12) + "..";
+        } else {
+            if (headerTitle.length() > 22) headerTitle = headerTitle.substr(0, 19) + "...";
+        }
         drawHeader(headerTitle, 320);
-        if (!dlBadge.empty()) {
-            drawText(220, 4, 0.45f, C2D_Color32(0, 0, 0, 255), dlBadge);
-        } else if (listTitle != "Downloads" && !items.empty() && (items[0].type == MediaType::TRACK || items[0].type == MediaType::EPISODE)) {
+        if (canDLAll) {
             drawButton(218, 2, 96, 20, "DL All (Y)", false);
+            if (!dlBadge.empty()) {
+                drawText(120, 4, 0.42f, C2D_Color32(0, 0, 0, 255), dlBadge);
+            }
+        } else if (!dlBadge.empty()) {
+            drawText(220, 4, 0.45f, C2D_Color32(0, 0, 0, 255), dlBadge);
         }
         float y = 32;
         int maxVisible = hasNowPlaying ? 4 : 5;
@@ -731,7 +740,8 @@ void UIRenderer::renderBottomScreen(AppState state,
                         if (ccDetail.length() > 16) ccDetail = ccDetail.substr(0, 14) + "..";
                     }
                     drawButton(15, 104, 135, 32, ccDetail, subtitlesEnabled);
-                    drawButton(155, 104, 78, 32, isItemDownloaded ? "Delete" : "Download");
+                    std::string dlLabel = isItemDownloaded ? "Delete" : (isItemQueued ? "Queued" : "Download");
+                    drawButton(155, 104, 78, 32, dlLabel, isItemQueued);
                     drawButton(238, 104, 67, 32, "Back");
 
                     std::string resumeTime = formatTime((int)(item.viewOffsetMs / 1000));
@@ -752,11 +762,8 @@ void UIRenderer::renderBottomScreen(AppState state,
                     std::string playLabel = isItemDownloaded ? "Play Offline" : ((item.type == MediaType::TRACK) ? "Play Music" : "Play Video");
                     drawButton(15, 144, 130, 36, playLabel, true);
 
-                    if (isItemDownloaded) {
-                        drawButton(150, 144, 78, 36, "Delete");
-                    } else {
-                        drawButton(150, 144, 78, 36, "Download");
-                    }
+                    std::string dlLabel = isItemDownloaded ? "Delete" : (isItemQueued ? "Queued" : "Download");
+                    drawButton(150, 144, 78, 36, dlLabel, isItemQueued);
                     drawButton(233, 144, 72, 36, "Back");
                 }
             }

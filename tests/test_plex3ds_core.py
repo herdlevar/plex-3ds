@@ -174,6 +174,131 @@ class TestPlex3DSDownloadQueue(unittest.TestCase):
         self.assertEqual(format_badge(1, 1, 45), "DL: 45%")
         self.assertEqual(format_badge(3, 12, 78), "DL (3/12): 78%")
 
+    def test_immediate_queue_count_sync_while_downloading(self):
+        # Simulates DownloadManager queueDownloads while transfer is active
+        class SimulatedDownloadManager:
+            def __init__(self):
+                self.is_downloading = True
+                self.current_item = "episode1"
+                self.queue = []
+                self.total_queue_count = 1
+                self.progress_queue_count = 1
+                self.progress_active = True
+
+            def queue_downloads(self, items):
+                added = 0
+                for item in items:
+                    if item == self.current_item or item in self.queue:
+                        continue
+                    self.queue.append(item)
+                    self.total_queue_count += 1
+                    added += 1
+                # Immediate synchronization fix
+                self.progress_queue_count = self.total_queue_count
+                return added
+
+            def is_queued(self, key):
+                return (self.is_downloading and self.current_item == key) or (key in self.queue)
+
+            def get_queue_position(self, key):
+                if self.is_downloading and self.current_item == key:
+                    return 1
+                if key in self.queue:
+                    return (2 if self.is_downloading else 1) + self.queue.index(key)
+                return 0
+
+            def cancel_queued_item(self, key):
+                if key in self.queue:
+                    self.queue.remove(key)
+                    if self.total_queue_count > 0:
+                        self.total_queue_count -= 1
+                    self.progress_queue_count = self.total_queue_count
+                    return True
+                if self.is_downloading and self.current_item == key:
+                    self.is_downloading = False
+                    self.current_item = None
+                    return True
+                return False
+
+        mgr = SimulatedDownloadManager()
+        self.assertEqual(mgr.progress_queue_count, 1)
+        self.assertEqual(mgr.get_queue_position("episode1"), 1)
+
+        # Enqueue 3 more episodes while episode1 is downloading
+        added = mgr.queue_downloads(["episode2", "episode3", "episode4"])
+        self.assertEqual(added, 3)
+        # Verify progress queue count is IMMEDIATELY updated without waiting for episode1 to finish
+        self.assertEqual(mgr.progress_queue_count, 4)
+        self.assertEqual(mgr.total_queue_count, 4)
+        self.assertEqual(mgr.get_queue_position("episode2"), 2)
+        self.assertEqual(mgr.get_queue_position("episode3"), 3)
+        self.assertEqual(mgr.get_queue_position("episode4"), 4)
+        self.assertTrue(mgr.is_queued("episode3"))
+        self.assertFalse(mgr.is_queued("episode99"))
+
+        # Cancel queued episode3
+        cancelled = mgr.cancel_queued_item("episode3")
+        self.assertTrue(cancelled)
+        self.assertEqual(mgr.progress_queue_count, 3)
+        self.assertFalse(mgr.is_queued("episode3"))
+        self.assertEqual(mgr.get_queue_position("episode4"), 3)
+
+    def test_status_message_expiry_preserves_user_action_feedback(self):
+        # Simulates setStatusMessage and background frame loop download monitoring
+        class SimulatedStatusController:
+            def __init__(self):
+                self.status_msg = ""
+                self.expiry_tick = 0
+
+            def set_status_message(self, msg, duration_ms, current_time_ms):
+                self.status_msg = msg
+                self.expiry_tick = current_time_ms + duration_ms if duration_ms > 0 else 0
+
+            def on_frame_update(self, dl_active, dl_title, dl_percent, current_time_ms):
+                if dl_active:
+                    if current_time_ms >= self.expiry_tick:
+                        self.status_msg = f"DL: {dl_title} - {dl_percent}%"
+
+        ctrl = SimulatedStatusController()
+        # Active download is running
+        now = 1000
+        ctrl.on_frame_update(True, "Bluey", 50, now)
+        self.assertEqual(ctrl.status_msg, "DL: Bluey - 50%")
+
+        # User queues another item at t=1010 ms with 3500ms duration
+        now = 1010
+        ctrl.set_status_message("Queued: Bingo (#2)", 3500, now)
+        self.assertEqual(ctrl.status_msg, "Queued: Bingo (#2)")
+
+        # Next frame at t=1026 ms (16ms later) - dl active, but expiry has NOT passed
+        now = 1026
+        ctrl.on_frame_update(True, "Bluey", 52, now)
+        # Message must NOT be clobbered
+        self.assertEqual(ctrl.status_msg, "Queued: Bingo (#2)")
+
+        # Halfway through display at t=2500 ms
+        now = 2500
+        ctrl.on_frame_update(True, "Bluey", 65, now)
+        self.assertEqual(ctrl.status_msg, "Queued: Bingo (#2)")
+
+        # After expiry at t=4511 ms (now >= 1010 + 3500 = 4510)
+        now = 4511
+        ctrl.on_frame_update(True, "Bluey", 80, now)
+        # Reverts to live background download progress
+        self.assertEqual(ctrl.status_msg, "DL: Bluey - 80%")
+
+    def test_detail_view_button_label_logic(self):
+        def get_button_label(is_downloaded, is_queued):
+            if is_downloaded:
+                return "Delete"
+            if is_queued:
+                return "Queued"
+            return "Download"
+
+        self.assertEqual(get_button_label(is_downloaded=True, is_queued=False), "Delete")
+        self.assertEqual(get_button_label(is_downloaded=False, is_queued=True), "Queued")
+        self.assertEqual(get_button_label(is_downloaded=False, is_queued=False), "Download")
+
 
 class TestPlex3DSClamshellPolicy(unittest.TestCase):
     def evaluate_clamshell_state(self, is_media_active, media_type, is_paused, headphones_connected):

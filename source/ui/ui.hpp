@@ -86,7 +86,8 @@ public:
                             bool subtitlesEnabled = false,
                             const std::string& subtitleName = "",
                             const std::string& username = "",
-                            bool isLoggedIn = false);
+                            bool isLoggedIn = false,
+                            bool isItemQueued = false);
 
     void renderBlankBottomScreen();
 

@@ -45,7 +45,25 @@ struct NavHistory {
 static std::vector<NavHistory> g_navStack;
 static std::string g_currentNavTitle = "Media";
 static std::string g_currentNavKey = "";
+
+#ifdef __3DS__
+static inline uint64_t getNowMs() {
+    return osGetTime();
+}
+#else
+#include <chrono>
+static inline uint64_t getNowMs() {
+    return (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+#endif
+
 static std::string g_statusMsg = "Connecting...";
+static uint64_t s_statusMsgExpiryTick = 0;
+
+static void setStatusMessage(const std::string& msg, int durationMs = 0) {
+    g_statusMsg = msg;
+    s_statusMsgExpiryTick = (durationMs > 0) ? (getNowMs() + (uint64_t)durationMs) : 0;
+}
 
 static PlexMediaItem g_nowPlayingItem;
 static bool g_hasNowPlaying = false;
@@ -571,35 +589,56 @@ static void openDownloadsView(UIRenderer& ui) {
 
 static void downloadSingleItem(const PlexMediaItem& item, const PlexServer& server, const PlexAPI& api) {
     if (g_downloadManager.isDownloaded(item.ratingKey)) {
-        g_statusMsg = item.title + " is already downloaded";
+        setStatusMessage(item.title + " is already downloaded", 3000);
+        return;
+    }
+    if (g_downloadManager.isQueued(item.ratingKey)) {
+        int pos = g_downloadManager.getQueuePosition(item.ratingKey);
+        if (pos == 1) {
+            setStatusMessage("Already downloading: " + item.title, 3000);
+        } else {
+            setStatusMessage("Already queued: " + item.title + " (#" + std::to_string(pos) + ")", 3000);
+        }
         return;
     }
     std::string dlUrl = api.buildTranscodeUrl(server, item, g_config);
     if (!dlUrl.empty()) {
         std::vector<std::pair<PlexMediaItem, std::string>> list;
         list.push_back({item, dlUrl});
-        g_downloadManager.queueDownloads(list);
-        g_statusMsg = "Downloading: " + item.title;
+        int added = g_downloadManager.queueDownloads(list);
+        if (added > 0) {
+            int pos = g_downloadManager.getQueuePosition(item.ratingKey);
+            if (pos <= 1) {
+                setStatusMessage("Downloading: " + item.title, 3500);
+            } else {
+                setStatusMessage("Queued: " + item.title + " (#" + std::to_string(pos) + ")", 3500);
+            }
+        }
     } else {
-        g_statusMsg = "Failed to build download URL";
+        setStatusMessage("Failed to build download URL", 3000);
     }
 }
 
 static void downloadContainer(const PlexMediaItem& containerItem, const PlexServer& server, const PlexAPI& api, UIRenderer& ui) {
-    g_statusMsg = "Fetching " + containerItem.title + " items...";
+    setStatusMessage("Fetching " + containerItem.title + " items...", 2000);
     ui.beginFrame();
     ui.renderTopScreen(g_state, g_hasNowPlaying ? &g_nowPlayingItem : nullptr, g_hasNowPlaying, nullptr, g_statusMsg, g_pVideoPlayer, g_pAudioPlayer, g_config.username, !g_config.authToken.empty(), g_pinCode);
     ui.endFrame();
 
     std::vector<PlexMediaItem> childItems;
     if (!const_cast<PlexAPI&>(api).getItems(server, containerItem.key, childItems, 0, 100)) {
-        g_statusMsg = "Failed to fetch items for " + containerItem.title;
+        setStatusMessage("Failed to fetch items for " + containerItem.title, 3000);
         return;
     }
 
     std::vector<std::pair<PlexMediaItem, std::string>> queueList;
+    int alreadyCount = 0;
     for (auto child : childItems) {
-        if (!child.ratingKey.empty() && child.key != "__LOAD_MORE__" && !g_downloadManager.isDownloaded(child.ratingKey)) {
+        if (!child.ratingKey.empty() && child.key != "__LOAD_MORE__") {
+            if (g_downloadManager.isDownloaded(child.ratingKey) || g_downloadManager.isQueued(child.ratingKey)) {
+                alreadyCount++;
+                continue;
+            }
             if (containerItem.type == MediaType::SEASON) {
                 if (child.parentTitle.empty()) child.parentTitle = containerItem.title;
                 if (child.grandparentTitle.empty() && !containerItem.parentTitle.empty()) child.grandparentTitle = containerItem.parentTitle;
@@ -614,20 +653,29 @@ static void downloadContainer(const PlexMediaItem& containerItem, const PlexServ
         }
     }
 
+    std::string unit = (containerItem.type == MediaType::ALBUM) ? "tracks" : "episodes";
     if (queueList.empty()) {
-        g_statusMsg = containerItem.title + " is already downloaded!";
+        if (alreadyCount > 0) {
+            setStatusMessage("All " + containerItem.title + " " + unit + " already downloaded/queued!", 3500);
+        } else {
+            setStatusMessage("No downloadable " + unit + " found in " + containerItem.title, 3500);
+        }
         return;
     }
 
     int queued = g_downloadManager.queueDownloads(queueList);
-    std::string unit = (containerItem.type == MediaType::ALBUM) ? "tracks" : "episodes";
-    g_statusMsg = "Queued " + std::to_string(queued) + " " + unit + " from " + containerItem.title;
+    setStatusMessage("Queued " + std::to_string(queued) + " " + unit + " from " + containerItem.title, 3500);
 }
 
 static void downloadCurrentList(const PlexServer& server, const PlexAPI& api, const std::string& title) {
     std::vector<std::pair<PlexMediaItem, std::string>> queueList;
+    int alreadyCount = 0;
     for (auto child : g_items) {
-        if (!child.ratingKey.empty() && child.key != "__LOAD_MORE__" && !g_downloadManager.isDownloaded(child.ratingKey)) {
+        if (!child.ratingKey.empty() && child.key != "__LOAD_MORE__") {
+            if (g_downloadManager.isDownloaded(child.ratingKey) || g_downloadManager.isQueued(child.ratingKey)) {
+                alreadyCount++;
+                continue;
+            }
             if (child.parentTitle.empty() && !title.empty()) {
                 child.parentTitle = title;
             }
@@ -639,12 +687,16 @@ static void downloadCurrentList(const PlexServer& server, const PlexAPI& api, co
     }
 
     if (queueList.empty()) {
-        g_statusMsg = title + " is already downloaded!";
+        if (alreadyCount > 0) {
+            setStatusMessage("All items already downloaded or queued!", 3500);
+        } else {
+            setStatusMessage("No downloadable items in " + title, 3500);
+        }
         return;
     }
 
     int queued = g_downloadManager.queueDownloads(queueList);
-    g_statusMsg = "Queued " + std::to_string(queued) + " items from " + title;
+    setStatusMessage("Queued " + std::to_string(queued) + " items from " + title, 3500);
 }
 
 static void playMediaItem(const PlexMediaItem& item, AudioPlayer& audioPlayer, VideoPlayer& videoPlayer, const PlexAPI& api, int64_t startOffsetMs = 0) {
@@ -1443,7 +1495,9 @@ int main(int argc, char* argv[]) {
         static int lastDlCompletedCount = 0;
         auto dlProg = g_downloadManager.getProgress();
         if (dlProg.active) {
-            g_statusMsg = "DL: " + dlProg.title + " - " + dlProg.statusText;
+            if (getNowMs() >= s_statusMsgExpiryTick) {
+                g_statusMsg = "DL: " + dlProg.title + " - " + dlProg.statusText;
+            }
         }
 
         if (dlProg.completedCount != lastDlCompletedCount) {
@@ -1453,7 +1507,7 @@ int main(int argc, char* argv[]) {
                 int64_t freeBytes = g_downloadManager.getSDFreeSpaceBytes();
                 int freeGB = (int)(freeBytes / (1024 * 1024 * 1024));
                 auto allDownloads = g_downloadManager.getDownloadedItems();
-                g_statusMsg = "Downloads (" + std::to_string(allDownloads.size()) + " items, " + std::to_string(freeGB) + " GB free)";
+                setStatusMessage("Downloads (" + std::to_string(allDownloads.size()) + " items, " + std::to_string(freeGB) + " GB free)", 3000);
             } else {
                 for (auto& it : g_items) {
                     if (g_downloadManager.isDownloaded(it.ratingKey)) {
@@ -1468,7 +1522,7 @@ int main(int argc, char* argv[]) {
 
         if (lastDlActive && !dlProg.active) {
             if (dlProg.completed) {
-                g_statusMsg = "Downloaded: " + dlProg.title;
+                setStatusMessage("Downloaded: " + dlProg.title, 3500);
                 if (g_currentNavTitle == "Downloads" || g_currentNavKey.rfind("__offline", 0) == 0) {
                     g_items = getOfflineItemsForNavKey(g_currentNavKey);
                 } else {
@@ -1482,7 +1536,7 @@ int main(int argc, char* argv[]) {
                     }
                 }
             } else if (dlProg.failed) {
-                g_statusMsg = dlProg.statusText.empty() ? "Download failed" : dlProg.statusText;
+                setStatusMessage(dlProg.statusText.empty() ? "Download failed" : dlProg.statusText, 4000);
             }
         }
         lastDlActive = dlProg.active;
@@ -1616,9 +1670,7 @@ int main(int argc, char* argv[]) {
 
         std::string dlBadge = "";
         if (dlProg.active) {
-            if (!dlProg.statusText.empty()) {
-                dlBadge = "DL: " + dlProg.statusText;
-            } else if (dlProg.queueCount > 1) {
+            if (dlProg.queueCount > 1) {
                 dlBadge = "DL (" + std::to_string(dlProg.queueIndex) + "/" + std::to_string(dlProg.queueCount) + "): " + std::to_string(dlProg.percent) + "%";
             } else {
                 dlBadge = "DL: " + std::to_string(dlProg.percent) + "%";
@@ -1627,11 +1679,13 @@ int main(int argc, char* argv[]) {
 
         bool isCurrentItemDownloaded = false;
         bool isDownloadingCurrent = false;
+        bool isCurrentItemQueued = false;
         int dlPercent = dlProg.percent;
 
         if (g_state == AppState::DETAIL_VIEW && currentDetailItem) {
             isCurrentItemDownloaded = currentDetailItem->isOffline || g_downloadManager.isDownloaded(currentDetailItem->ratingKey);
             isDownloadingCurrent = dlProg.active && (dlProg.ratingKey == currentDetailItem->ratingKey);
+            isCurrentItemQueued = !isDownloadingCurrent && g_downloadManager.isQueued(currentDetailItem->ratingKey);
         }
 
         std::string subName = "";
@@ -1669,7 +1723,8 @@ int main(int argc, char* argv[]) {
                                   g_config.subtitlesEnabled,
                                   subName,
                                   g_config.username,
-                                  !g_config.authToken.empty());
+                                  !g_config.authToken.empty(),
+                                  isCurrentItemQueued);
             if (g_confirmDialog.active) {
                 ui.renderConfirmDialog(g_confirmDialog.title,
                                        g_confirmDialog.prompt,
@@ -2442,6 +2497,7 @@ int main(int argc, char* argv[]) {
             bool isItemDownloaded = curItem.isOffline || g_downloadManager.isDownloaded(curItem.ratingKey);
             auto curProg = g_downloadManager.getProgress();
             bool isCurDownloading = curProg.active && (curProg.ratingKey == curItem.ratingKey);
+            bool isCurQueued = !isCurDownloading && g_downloadManager.isQueued(curItem.ratingKey);
 
             bool hasResume = (curItem.type != MediaType::TRACK) &&
                              (curItem.viewOffsetMs > 10000) &&
@@ -2536,7 +2592,7 @@ int main(int argc, char* argv[]) {
 
             if (actionCancelDl) {
                 g_downloadManager.cancelDownload();
-                g_statusMsg = "Download cancelled";
+                setStatusMessage("Download cancelled", 3500);
             } else if (actionResume || actionRestart) {
                 s_upHoldFrames = 0;
                 s_downHoldFrames = 0;
@@ -2576,7 +2632,7 @@ int main(int argc, char* argv[]) {
                     g_confirmDialog.cancelLabel = "Cancel (B)";
                     g_confirmDialog.onConfirm = [ratingKey, itemTitle]() {
                         g_downloadManager.deleteDownload(ratingKey);
-                        g_statusMsg = "Deleted " + itemTitle;
+                        setStatusMessage("Deleted " + itemTitle, 3500);
                         if ((!g_libraries.empty() && g_selectedLibraryIdx >= 0 && g_selectedLibraryIdx < (int)g_libraries.size() && g_libraries[g_selectedLibraryIdx].key == "__offline__") || g_currentNavTitle == "Downloads" || g_currentNavKey.rfind("__offline", 0) == 0) {
                             g_items = getOfflineItemsForNavKey(g_currentNavKey);
                             if (g_selectedItemIdx >= (int)g_items.size()) {
@@ -2597,21 +2653,16 @@ int main(int argc, char* argv[]) {
                         }
                     };
                     g_confirmDialog.onCancel = []() {
-                        g_statusMsg = "Cancelled delete.";
+                        setStatusMessage("Cancelled delete.", 3000);
                     };
+                } else if (isCurQueued) {
+                    g_downloadManager.cancelQueuedItem(curItem.ratingKey);
+                    setStatusMessage("Cancelled queued download: " + curItem.title, 3500);
                 } else {
-                    if (g_downloadManager.isDownloading()) {
-                        g_statusMsg = "Already downloading an item!";
-                    } else if (g_servers.empty() || g_selectedServerIdx < 0 || g_selectedServerIdx >= (int)g_servers.size()) {
-                        g_statusMsg = "No active server to download from";
+                    if (g_servers.empty() || g_selectedServerIdx < 0 || g_selectedServerIdx >= (int)g_servers.size()) {
+                        setStatusMessage("No active server to download from", 3000);
                     } else {
-                        std::string dlUrl = api.buildTranscodeUrl(g_servers[g_selectedServerIdx], curItem, g_config);
-                        if (!dlUrl.empty()) {
-                            g_downloadManager.startDownload(curItem, dlUrl);
-                            g_statusMsg = "Downloading: " + curItem.title;
-                        } else {
-                            g_statusMsg = "Failed to build download URL";
-                        }
+                        downloadSingleItem(curItem, g_servers[g_selectedServerIdx], api);
                     }
                 }
             } else if (actionBack) {
