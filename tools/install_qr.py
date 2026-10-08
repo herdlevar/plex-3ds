@@ -9,15 +9,30 @@ import sys
 PORT = 8000
 
 def get_lan_ip():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    if len(sys.argv) > 1 and sys.argv[1].replace(".", "").isdigit():
+        return sys.argv[1]
+
+    # Try connecting toward local subnet to bypass VPN virtual interface
+    for target in ["192.168.86.1", "192.168.1.1", "192.168.0.1", "10.0.0.1"]:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect((target, 80))
+            ip = s.getsockname()[0]
+            s.close()
+            if ip and not ip.startswith("127.") and not ip.startswith("10.5."):
+                return ip
+        except Exception:
+            pass
+
     try:
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
+        hostname = socket.gethostname()
+        for ip in socket.gethostbyname_ex(hostname)[2]:
+            if ip.startswith("192.168."):
+                return ip
     except Exception:
-        ip = "127.0.0.1"
-    finally:
-        s.close()
-    return ip
+        pass
+
+    return "192.168.86.113"
 
 def generate_html(target_url):
     js_path = os.path.join(os.path.dirname(__file__), "qrcode.min.js")

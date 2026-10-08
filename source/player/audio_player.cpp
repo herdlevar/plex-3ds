@@ -101,7 +101,7 @@ int AudioPlayer::readStream(uint8_t* buf, int maxBytes) {
             }
         }
 
-        if (m_downloadFinished.load()) {
+        if (m_downloadFinished.load() && !m_seekRequested.load()) {
             std::lock_guard<std::mutex> lock(m_chunkMutex);
             size_t finalCount = m_chunkCount.load();
             if (m_readChunkIdx >= finalCount ||
@@ -133,6 +133,11 @@ void AudioPlayer::downloadLoop() {
     if (isLocal) {
         FILE* f = fopen(m_currentUrl.c_str(), "rb");
         if (f) {
+            fseek(f, 0, SEEK_END);
+            long sz = ftell(f);
+            if (sz > 0) m_totalContentBytes = (size_t)sz;
+            fseek(f, 0, SEEK_SET);
+
             while (!m_stopRequested.load() && !g_appExiting.load()) {
                 size_t count = m_chunkCount.load();
                 if (count >= MAX_CHUNKS) break;
@@ -233,9 +238,12 @@ void AudioPlayer::downloadLoop() {
     };
 
     auto xferInfoCb = [](void* clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) -> int {
-        (void)dltotal; (void)dlnow; (void)ultotal; (void)ulnow;
+        (void)dlnow; (void)ultotal; (void)ulnow;
         AudioPlayer* p = (AudioPlayer*)clientp;
         if (p->m_stopRequested.load() || g_appExiting.load()) return 1;
+        if (dltotal > 0 && p->m_totalContentBytes.load() == 0) {
+            p->m_totalContentBytes = (size_t)dltotal;
+        }
         return 0;
     };
 
@@ -268,6 +276,69 @@ void AudioPlayer::downloadLoop() {
     curl_easy_cleanup(curl);
     m_downloadFinished = true;
 }
+
+#ifdef __3DS__
+void AudioPlayer::performSeek(mpg123_handle* mh, ndspWaveBuf* waveBuf, size_t numBuffers, int& currentBuf, uint64_t& samplesPlayed, long curRate, int channels, bool& formatSet) {
+    int targetSec = m_seekTargetSec.load();
+    if (targetSec < 0) targetSec = 0;
+    int total = m_totalSec.load();
+    if (total > 0 && targetSec > total) targetSec = total;
+
+    off_t targetSample = (off_t)targetSec * curRate;
+    off_t input_offset = 0;
+    off_t actualSample = -1;
+    if (mh && formatSet) {
+        actualSample = mpg123_feedseek(mh, targetSample, SEEK_SET, &input_offset);
+    }
+
+    size_t targetByte = 0;
+    if (actualSample >= 0 && input_offset >= 0) {
+        targetByte = (size_t)input_offset;
+        samplesPlayed = (uint64_t)actualSample;
+    } else {
+        // Fallback: estimate byte position from total content size and duration
+        size_t totalBytes = m_totalContentBytes.load();
+        if (totalBytes == 0) totalBytes = m_totalDownloadedBytes.load();
+        if (total > 0 && totalBytes > 0) {
+            targetByte = (size_t)(((uint64_t)targetSec * totalBytes) / total);
+        } else {
+            targetByte = 0;
+        }
+        if (mh) {
+            mpg123_close(mh);
+            mpg123_open_feed(mh);
+        }
+        samplesPlayed = (uint64_t)targetSample;
+        formatSet = false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_chunkMutex);
+        m_readChunkIdx = targetByte / AudioChunk::CHUNK_SIZE;
+        m_readChunkOffset = targetByte % AudioChunk::CHUNK_SIZE;
+    }
+
+    m_initialSec = 0;
+    m_currentSec = targetSec;
+
+    ndspChnReset(m_channel);
+    ndspChnSetInterp(m_channel, NDSP_INTERP_LINEAR);
+    ndspChnSetRate(m_channel, (float)curRate);
+    ndspChnSetFormat(m_channel, (channels == 2) ? NDSP_FORMAT_STEREO_PCM16 : NDSP_FORMAT_MONO_PCM16);
+    float mix[12];
+    memset(mix, 0, sizeof(mix));
+    mix[0] = 1.0f;
+    mix[1] = 1.0f;
+    ndspChnSetMix(m_channel, mix);
+    for (size_t i = 0; i < numBuffers; i++) {
+        waveBuf[i].status = NDSP_WBUF_DONE;
+    }
+    currentBuf = 0;
+    if (m_isPaused.load()) {
+        ndspChnSetPaused(m_channel, true);
+    }
+}
+#endif
 
 void AudioPlayer::decodeLoop() {
     mpg123_init();
@@ -325,6 +396,9 @@ void AudioPlayer::decodeLoop() {
         if (m_isPaused.load() || g_isSuspended.load()) {
             m_decodePaused = true;
             while ((m_isPaused.load() || g_isSuspended.load()) && !m_stopRequested.load() && !g_appExiting.load()) {
+                if (m_seekRequested.exchange(false)) {
+                    performSeek(mh, waveBuf, NUM_BUFFERS, currentBuf, samplesPlayed, curRate, channels, formatSet);
+                }
 #ifdef __3DS__
                 svcSleepThread(20000000); // 20ms
 #else
@@ -333,6 +407,11 @@ void AudioPlayer::decodeLoop() {
             }
             m_decodePaused = false;
             if (m_stopRequested.load() || g_appExiting.load()) break;
+        }
+
+        if (m_seekRequested.exchange(false)) {
+            performSeek(mh, waveBuf, NUM_BUFFERS, currentBuf, samplesPlayed, curRate, channels, formatSet);
+            continue;
         }
 
 #ifdef __3DS__
@@ -448,6 +527,9 @@ bool AudioPlayer::play(const std::string& audioUrl, int totalSec) {
     m_isPaused = false;
     m_wasSuspended = false;
     m_decodePaused = false;
+    m_seekRequested = false;
+    m_seekTargetSec = 0;
+    m_totalContentBytes = 0;
     m_isPlaying = true;
     m_readChunkIdx = 0;
     m_readChunkOffset = 0;
@@ -555,29 +637,13 @@ void AudioPlayer::update() {
 }
 
 void AudioPlayer::seekTo(int targetSeconds) {
-    if (!m_isPlaying.load() || m_currentUrl.empty()) return;
+    if (!m_isPlaying.load()) return;
     if (targetSeconds < 0) targetSeconds = 0;
     int total = m_totalSec.load();
     if (total > 0 && targetSeconds > total) targetSeconds = total;
 
-    bool isLocal = (m_currentUrl.rfind("http://", 0) != 0 && m_currentUrl.rfind("https://", 0) != 0);
-    std::string url = m_currentUrl;
-    if (!isLocal) {
-        size_t offPos = url.find("&offset=");
-        if (offPos != std::string::npos) {
-            size_t nextAmp = url.find('&', offPos + 8);
-            if (nextAmp != std::string::npos) {
-                url.replace(offPos + 8, nextAmp - (offPos + 8), std::to_string(targetSeconds));
-            } else {
-                url.replace(offPos + 8, std::string::npos, std::to_string(targetSeconds));
-            }
-        } else {
-            url += "&offset=" + std::to_string(targetSeconds);
-        }
-    }
-
-    play(url, total);
-    m_initialSec = targetSeconds;
+    m_seekTargetSec = targetSeconds;
+    m_seekRequested = true;
     m_currentSec = targetSeconds;
 }
 

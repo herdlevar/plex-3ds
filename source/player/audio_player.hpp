@@ -8,6 +8,8 @@
 
 #ifdef __3DS__
 #include <3ds.h>
+struct mpg123_handle_struct;
+typedef struct mpg123_handle_struct mpg123_handle;
 #endif
 
 class AudioPlayer {
@@ -64,6 +66,10 @@ private:
     std::atomic<size_t> m_totalDownloadedBytes{0};
     std::atomic<bool> m_downloadFinished{false};
 
+    std::atomic<bool> m_seekRequested{false};
+    std::atomic<int> m_seekTargetSec{0};
+    std::atomic<size_t> m_totalContentBytes{0};
+
     void clearChunks();
     int readStream(uint8_t* buf, int maxBytes);
 
@@ -74,5 +80,6 @@ private:
     static void decodeThreadEntry(void* arg);
     void downloadLoop();
     void decodeLoop();
+    void performSeek(mpg123_handle* mh, ndspWaveBuf* waveBuf, size_t numBuffers, int& currentBuf, uint64_t& samplesPlayed, long curRate, int channels, bool& formatSet);
 #endif
 };

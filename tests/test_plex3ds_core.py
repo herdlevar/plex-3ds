@@ -534,6 +534,99 @@ class TestPlex3DSOfflineNavigation(unittest.TestCase):
         self.assertEqual(album_tracks[1]["title"], "Aerodynamic")
 
 
+class TestPlex3DSAudioPlayerSeeking(unittest.TestCase):
+    class SimulatedAudioPlayer:
+        CHUNK_SIZE = 64 * 1024
+
+        def __init__(self, total_sec=240, total_bytes=6000000):
+            self.total_sec = total_sec
+            self.total_bytes = total_bytes
+            self.current_sec = 0
+            self.is_playing = True
+            self.seek_requested = False
+            self.seek_target_sec = 0
+            self.read_chunk_idx = 0
+            self.read_chunk_offset = 0
+
+        def seek_to(self, target_sec):
+            if not self.is_playing:
+                return
+            if target_sec < 0:
+                target_sec = 0
+            if self.total_sec > 0 and target_sec > self.total_sec:
+                target_sec = self.total_sec
+
+            self.seek_target_sec = target_sec
+            self.seek_requested = True
+            self.current_sec = target_sec
+
+        def seek(self, delta_sec):
+            self.seek_to(self.current_sec + delta_sec)
+
+        def perform_seek(self):
+            if not self.seek_requested:
+                return
+            self.seek_requested = False
+            target_sec = self.seek_target_sec
+            if self.total_sec > 0 and self.total_bytes > 0:
+                target_byte = (target_sec * self.total_bytes) // self.total_sec
+            else:
+                target_byte = 0
+            self.read_chunk_idx = target_byte // self.CHUNK_SIZE
+            self.read_chunk_offset = target_byte % self.CHUNK_SIZE
+            self.current_sec = target_sec
+
+    def test_seek_forward_15s(self):
+        player = self.SimulatedAudioPlayer(total_sec=200, total_bytes=5000000)
+        player.current_sec = 10
+        player.seek(15)
+        self.assertTrue(player.seek_requested)
+        self.assertEqual(player.seek_target_sec, 25)
+        self.assertEqual(player.current_sec, 25)
+
+        player.perform_seek()
+        self.assertFalse(player.seek_requested)
+        self.assertEqual(player.current_sec, 25)
+        # Expected byte = (25 * 5000000) // 200 = 625000
+        # Expected chunk = 625000 // 65536 = 9
+        # Expected offset = 625000 % 65536 = 35176
+        self.assertEqual(player.read_chunk_idx, 9)
+        self.assertEqual(player.read_chunk_offset, 35176)
+
+    def test_seek_backward_15s(self):
+        player = self.SimulatedAudioPlayer(total_sec=200, total_bytes=5000000)
+        player.current_sec = 30
+        player.seek(-15)
+        self.assertTrue(player.seek_requested)
+        self.assertEqual(player.seek_target_sec, 15)
+        self.assertEqual(player.current_sec, 15)
+
+        player.perform_seek()
+        self.assertEqual(player.current_sec, 15)
+        # Expected byte = (15 * 5000000) // 200 = 375000
+        # Expected chunk = 375000 // 65536 = 5
+        # Expected offset = 375000 % 65536 = 47320
+        self.assertEqual(player.read_chunk_idx, 5)
+        self.assertEqual(player.read_chunk_offset, 47320)
+
+    def test_seek_clamps_to_zero(self):
+        player = self.SimulatedAudioPlayer(total_sec=200, total_bytes=5000000)
+        player.current_sec = 5
+        player.seek(-15)
+        self.assertEqual(player.seek_target_sec, 0)
+        self.assertEqual(player.current_sec, 0)
+        player.perform_seek()
+        self.assertEqual(player.read_chunk_idx, 0)
+        self.assertEqual(player.read_chunk_offset, 0)
+
+    def test_seek_clamps_to_duration(self):
+        player = self.SimulatedAudioPlayer(total_sec=200, total_bytes=5000000)
+        player.current_sec = 195
+        player.seek(15)
+        self.assertEqual(player.seek_target_sec, 200)
+        self.assertEqual(player.current_sec, 200)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
 
