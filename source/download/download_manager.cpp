@@ -593,6 +593,10 @@ void DownloadManager::downloadLoop() {
             continue;
         }
 
+        // Buffer SD writes in 64KB chunks to align with FAT32 clusters and minimize SDMC IPC overhead
+        std::vector<char> fileBuffer(64 * 1024);
+        setvbuf(outFile, fileBuffer.data(), _IOFBF, fileBuffer.size());
+
         CURL* curl = curl_easy_init();
         if (!curl) {
             fclose(outFile);
@@ -686,7 +690,8 @@ void DownloadManager::downloadLoop() {
         curl_easy_setopt(curl, CURLOPT_XFERINFODATA, this);
         curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-        curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 32768L);
+        curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 65536L);
+        curl_easy_setopt(curl, CURLOPT_TCP_NODELAY, 1L);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
         curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 512L);
@@ -726,6 +731,7 @@ void DownloadManager::downloadLoop() {
 
         curl_slist_free_all(headers);
         curl_easy_cleanup(curl);
+        fflush(outFile);
         fclose(outFile);
 
         if (res == CURLE_OK && !m_cancelRequested.load()) {
