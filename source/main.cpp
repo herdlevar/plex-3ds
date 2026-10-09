@@ -1241,9 +1241,7 @@ int main(int argc, char* argv[]) {
         }
 
         if (aptCheckHomePressRejected()) {
-            aptClearChainloader();
-            g_appExiting = true;
-            break;
+            setStatusMessage("Press START to exit to HOME Menu", 3500);
         }
 
         if (g_needsPostWakeupResume.exchange(false)) {

@@ -190,6 +190,15 @@ void UIRenderer::renderTopScreen(AppState state,
     if (videoPlayer && (videoPlayer->isPlaying() || videoPlayer->hasFrame())) {
         if (videoPlayer->hasFrame()) {
             C2D_DrawImageAt(videoPlayer->getImage(), 0, 0, 0.5f, NULL, 1.0f, 1.0f);
+            if (!statusMessage.empty()) {
+                float pillW = 280.0f;
+                float pillH = 24.0f;
+                float pillX = (400.0f - pillW) / 2.0f;
+                float pillY = 10.0f;
+                C2D_DrawRectSolid(pillX, pillY, 0.6f, pillW, pillH, C2D_Color32(20, 20, 25, 220));
+                C2D_DrawRectSolid(pillX, pillY, 0.61f, 3.0f, pillH, COLOR_PLEX_ORANGE);
+                drawText(pillX + 10.0f, pillY + 4.0f, 0.42f, COLOR_WHITE, statusMessage, 0.82f);
+            }
             return;
         } else {
             // Connecting or buffering
@@ -263,7 +272,11 @@ void UIRenderer::renderTopScreen(AppState state,
             float f = std::clamp((float)cur / (float)tot, 0.0f, 1.0f);
             C2D_DrawRectSolid(20, 155, 0.5f, f * 360.0f, 6, COLOR_PLEX_ORANGE);
         }
-        drawText(20, 195, 0.45f, COLOR_GRAY, "(Controls on bottom screen | Browse library anytime)");
+        if (!statusMessage.empty()) {
+            drawText(20, 195, 0.45f, COLOR_PLEX_ORANGE, statusMessage);
+        } else {
+            drawText(20, 195, 0.45f, COLOR_GRAY, "(Controls on bottom screen | Browse library anytime)");
+        }
         return;
     }
 

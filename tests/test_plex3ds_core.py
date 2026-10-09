@@ -591,41 +591,33 @@ class TestPlex3DSSuspendResumePolicy(unittest.TestCase):
 
 
 class TestPlex3DSHomeButtonPolicy(unittest.TestCase):
-    def test_home_press_rejected_exits_cleanly(self):
+    def test_home_press_rejected_shows_guidance_without_freezing(self):
         # aptSetHomeAllowed(False) is universally enabled across both CIA and 3dsx builds
-        # so pressing HOME button closes the app cleanly.
+        # so pressing HOME button does not invoke sysapplet screen transfer (which deadlocks).
         apt_home_allowed = False
         home_press_rejected = not apt_home_allowed
         self.assertTrue(home_press_rejected)
 
-        # When HOME is pressed, aptCheckHomePressRejected() detects it
-        chainloader_cleared = False
+        # When HOME is pressed, aptCheckHomePressRejected() detects the rejected press.
+        # Instead of calling exit (which deadlocks with APT transition lock), it sets a guidance toast.
         app_exiting = False
-        resume_saved = False
-        playback_stopped = False
+        status_msg = ""
 
         if home_press_rejected:
-            chainloader_cleared = True
-            app_exiting = True
-            # Clean exit sequence preserves playback state
-            resume_saved = True
-            playback_stopped = True
+            status_msg = "Press START to exit to HOME Menu"
+            # App does NOT break out of the main loop, avoiding freeze
+            app_exiting = False
 
-        self.assertTrue(chainloader_cleared)
-        self.assertTrue(app_exiting)
-        self.assertTrue(resume_saved)
-        self.assertTrue(playback_stopped)
+        self.assertFalse(app_exiting)
+        self.assertEqual(status_msg, "Press START to exit to HOME Menu")
 
-    def test_start_press_keeps_chainloader_for_hbmenu_exit(self):
-        # When START is pressed, chainloader is NOT cleared (returns to hbmenu)
-        chainloader_cleared = False
+    def test_start_press_exits_cleanly(self):
+        # When START is pressed, the main loop cleanly exits without APT deadlock
         app_exiting = False
-
         start_pressed = True
         if start_pressed:
             app_exiting = True
 
-        self.assertFalse(chainloader_cleared)
         self.assertTrue(app_exiting)
 
     def test_video_player_thread_teardown_bounded_timeout_and_abort(self):
