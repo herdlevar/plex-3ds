@@ -1191,14 +1191,9 @@ int main(int argc, char* argv[]) {
     g_pVideoPlayer = &videoPlayer;
 #ifdef __3DS__
     aptHook(&g_aptCookie, onAptHook, nullptr);
-    if (envIsHomebrew()) {
-        // Under Homebrew Launcher (.3dsx), Home Menu applet suspension is not supported.
-        // Disallow HOME so rejected press is intercepted to chainload cleanly back to hbmenu.
-        aptSetHomeAllowed(false);
-    } else {
-        // Installed CIA title: enable standard 3DS HOME Menu suspension and resumption!
-        aptSetHomeAllowed(true);
-    }
+    // Home Menu applet suspension is unsupported for homebrew CIAs and hangs in aptScreenTransfer.
+    // Disallow HOME so rejected press is intercepted to close the app cleanly.
+    aptSetHomeAllowed(false);
 #endif
 
     g_downloadManager.init();
@@ -1245,7 +1240,7 @@ int main(int argc, char* argv[]) {
             break;
         }
 
-        if (envIsHomebrew() && aptCheckHomePressRejected()) {
+        if (aptCheckHomePressRejected()) {
             aptClearChainloader();
             g_appExiting = true;
             break;
