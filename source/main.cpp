@@ -1191,7 +1191,14 @@ int main(int argc, char* argv[]) {
     g_pVideoPlayer = &videoPlayer;
 #ifdef __3DS__
     aptHook(&g_aptCookie, onAptHook, nullptr);
-    aptSetHomeAllowed(false);
+    if (envIsHomebrew()) {
+        // Under Homebrew Launcher (.3dsx), Home Menu applet suspension is not supported.
+        // Disallow HOME so rejected press is intercepted to exit cleanly.
+        aptSetHomeAllowed(false);
+    } else {
+        // Installed CIA title: enable standard 3DS HOME Menu suspension and resumption!
+        aptSetHomeAllowed(true);
+    }
 #endif
 
     g_downloadManager.init();

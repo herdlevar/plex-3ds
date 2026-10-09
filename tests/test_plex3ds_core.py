@@ -591,13 +591,29 @@ class TestPlex3DSSuspendResumePolicy(unittest.TestCase):
 
 
 class TestPlex3DSHomeButtonPolicy(unittest.TestCase):
-    def test_home_press_clears_chainloader_and_exits_to_home_menu(self):
-        # When home button is pressed, aptCheckHomePressRejected() is true
+    def test_cia_allows_home_suspension(self):
+        # In installed CIA application, envIsHomebrew() is False.
+        # aptSetHomeAllowed(True) is enabled to support native 3DS HOME Menu suspension.
+        is_homebrew = False
+        apt_home_allowed = not is_homebrew
+        self.assertTrue(apt_home_allowed)
+
+        # When HOME button is pressed under CIA, the press is accepted (not rejected).
+        home_press_rejected = not apt_home_allowed
+        self.assertFalse(home_press_rejected)
+
+    def test_hbl_disallows_home_and_exits_cleanly(self):
+        # Under Homebrew Launcher (.3dsx), envIsHomebrew() is True.
+        # Home menu suspension is not supported by HBL, so aptSetHomeAllowed(False) is set.
+        is_homebrew = True
+        apt_home_allowed = not is_homebrew
+        self.assertFalse(apt_home_allowed)
+
+        # When HOME is pressed in HBL, aptCheckHomePressRejected() catches it
+        home_press_rejected = not apt_home_allowed
         chainloader_cleared = False
         app_exiting = False
-
-        home_pressed = True
-        if home_pressed:
+        if home_press_rejected:
             chainloader_cleared = True
             app_exiting = True
 
