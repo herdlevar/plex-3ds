@@ -201,6 +201,7 @@ void DownloadManager::ensureDirectories() {
 
 bool DownloadManager::init() {
     ensureDirectories();
+    m_cacheDirty.store(true);
     return true;
 }
 
@@ -208,15 +209,26 @@ void DownloadManager::exit() {
     cancelDownload();
 }
 
+void DownloadManager::invalidateCache() {
+    m_cacheDirty.store(true);
+}
+
+void DownloadManager::refreshCache() {
+    m_cacheDirty.store(true);
+    refreshCacheInternal();
+}
+
+void DownloadManager::ensureCacheLoaded() const {
+    if (m_cacheDirty.load()) {
+        refreshCacheInternal();
+    }
+}
+
 bool DownloadManager::isDownloaded(const std::string& ratingKey) const {
     if (ratingKey.empty()) return false;
-    std::string lp = getLocalFilePath(ratingKey);
-    if (lp.empty()) return false;
-    struct stat st;
-    if (stat(lp.c_str(), &st) != 0 || S_ISDIR(st.st_mode) || st.st_size < 4096) {
-        return false;
-    }
-    return true;
+    ensureCacheLoaded();
+    std::lock_guard<std::mutex> lock(m_cacheMutex);
+    return m_cachedRatingKeys.count(ratingKey) > 0;
 }
 
 bool DownloadManager::isQueued(const std::string& ratingKey) const {
@@ -249,150 +261,142 @@ int DownloadManager::getQueuePosition(const std::string& ratingKey) const {
 
 std::string DownloadManager::getLocalFilePath(const std::string& ratingKey) const {
     if (ratingKey.empty()) return "";
-    std::string safeKey = sanitizeKey(ratingKey);
-    std::string metaPath = META_DOWNLOAD_DIR + "/" + safeKey + ".json";
-    FILE* f = fopen(metaPath.c_str(), "rb");
-    std::string path = "";
-    if (f) {
-        fseek(f, 0, SEEK_END);
-        long sz = ftell(f);
-        fseek(f, 0, SEEK_SET);
-
-        if (sz > 0) {
-            std::string content(sz, '\0');
-            fread(&content[0], 1, sz, f);
-            cJSON* root = cJSON_Parse(content.c_str());
-            if (root) {
-                cJSON* p = cJSON_GetObjectItem(root, "localPath");
-                if (p && p->valuestring) path = p->valuestring;
-                cJSON_Delete(root);
-            }
-        }
-        fclose(f);
+    ensureCacheLoaded();
+    std::lock_guard<std::mutex> lock(m_cacheMutex);
+    auto it = m_cachedPaths.find(ratingKey);
+    if (it != m_cachedPaths.end()) {
+        return it->second;
     }
-
-    if (isSafeDownloadPath(path)) return path;
-
-    std::string cand1 = MUSIC_DOWNLOAD_DIR + "/" + safeKey + ".mp3";
-    std::string cand2 = LEGACY_VIDEO_DIR + "/" + safeKey + ".mkv";
-    std::string cand3 = LEGACY_MUSIC_DIR + "/" + safeKey + ".mp3";
-    std::string cand4 = BASE_DOWNLOAD_DIR + "/" + safeKey + ".mp3";
-    std::string cand5 = BASE_DOWNLOAD_DIR + "/" + safeKey + ".mkv";
-    if (isSafeDownloadPath(cand1)) return cand1;
-    if (isSafeDownloadPath(cand2)) return cand2;
-    if (isSafeDownloadPath(cand3)) return cand3;
-    if (isSafeDownloadPath(cand4)) return cand4;
-    if (isSafeDownloadPath(cand5)) return cand5;
-
     return "";
 }
 
 std::vector<PlexMediaItem> DownloadManager::getDownloadedItems() {
+    ensureCacheLoaded();
+    std::lock_guard<std::mutex> lock(m_cacheMutex);
+    return m_cachedDownloadedItems;
+}
+
+void DownloadManager::refreshCacheInternal() const {
+    std::lock_guard<std::mutex> lock(m_cacheMutex);
+    if (!m_cacheDirty.load()) return;
+
     std::vector<PlexMediaItem> items;
+    std::unordered_map<std::string, std::string> paths;
+    std::unordered_set<std::string> ratingKeys;
+    std::unordered_set<std::string> knownFilePaths;
+
     DIR* dir = opendir(META_DOWNLOAD_DIR.c_str());
-    if (!dir) return items;
+    if (dir) {
+        struct dirent* entry;
+        while ((entry = readdir(dir)) != nullptr) {
+            std::string fname = entry->d_name;
+            if (fname.length() > 5 && fname.rfind(".json") == fname.length() - 5) {
+                std::string metaPath = META_DOWNLOAD_DIR + "/" + fname;
+                FILE* f = fopen(metaPath.c_str(), "rb");
+                if (!f) continue;
 
-    struct dirent* entry;
-    while ((entry = readdir(dir)) != nullptr) {
-        std::string fname = entry->d_name;
-        if (fname.length() > 5 && fname.rfind(".json") == fname.length() - 5) {
-            std::string metaPath = META_DOWNLOAD_DIR + "/" + fname;
-            FILE* f = fopen(metaPath.c_str(), "rb");
-            if (!f) continue;
+                fseek(f, 0, SEEK_END);
+                long sz = ftell(f);
+                fseek(f, 0, SEEK_SET);
 
-            fseek(f, 0, SEEK_END);
-            long sz = ftell(f);
-            fseek(f, 0, SEEK_SET);
+                if (sz > 0) {
+                    std::string content(sz, '\0');
+                    fread(&content[0], 1, sz, f);
+                    fclose(f);
 
-            std::string content(sz, '\0');
-            fread(&content[0], 1, sz, f);
-            fclose(f);
+                    cJSON* root = cJSON_Parse(content.c_str());
+                    if (root) {
+                        cJSON* rk = cJSON_GetObjectItem(root, "ratingKey");
+                        cJSON* title = cJSON_GetObjectItem(root, "title");
+                        cJSON* parentTitle = cJSON_GetObjectItem(root, "parentTitle");
+                        cJSON* gpTitle = cJSON_GetObjectItem(root, "grandparentTitle");
+                        cJSON* summary = cJSON_GetObjectItem(root, "summary");
+                        cJSON* type = cJSON_GetObjectItem(root, "type");
+                        cJSON* localPath = cJSON_GetObjectItem(root, "localPath");
+                        cJSON* fileSize = cJSON_GetObjectItem(root, "fileSize");
+                        cJSON* durationMs = cJSON_GetObjectItem(root, "durationMs");
+                        cJSON* year = cJSON_GetObjectItem(root, "year");
+                        cJSON* index = cJSON_GetObjectItem(root, "index");
 
-            cJSON* root = cJSON_Parse(content.c_str());
-            if (root) {
-                cJSON* rk = cJSON_GetObjectItem(root, "ratingKey");
-                cJSON* title = cJSON_GetObjectItem(root, "title");
-                cJSON* parentTitle = cJSON_GetObjectItem(root, "parentTitle");
-                cJSON* gpTitle = cJSON_GetObjectItem(root, "grandparentTitle");
-                cJSON* summary = cJSON_GetObjectItem(root, "summary");
-                cJSON* type = cJSON_GetObjectItem(root, "type");
-                cJSON* localPath = cJSON_GetObjectItem(root, "localPath");
-                cJSON* fileSize = cJSON_GetObjectItem(root, "fileSize");
-                cJSON* durationMs = cJSON_GetObjectItem(root, "durationMs");
-                cJSON* year = cJSON_GetObjectItem(root, "year");
-                cJSON* index = cJSON_GetObjectItem(root, "index");
+                        auto isFileValid = [](const std::string& path) -> bool {
+                            if (path.empty()) return false;
+                            struct stat st;
+                            return (stat(path.c_str(), &st) == 0 && !S_ISDIR(st.st_mode) && st.st_size > 4096);
+                        };
 
-                auto isFileValid = [](const std::string& path) -> bool {
-                    if (path.empty()) return false;
-                    struct stat st;
-                    return (stat(path.c_str(), &st) == 0 && !S_ISDIR(st.st_mode) && st.st_size > 4096);
-                };
-
-                std::string lp = (localPath && localPath->valuestring) ? localPath->valuestring : "";
-                if (lp.empty() || !isFileValid(lp)) {
-                    std::string keyBase = fname.substr(0, fname.length() - 5);
-                    std::string cand1 = MUSIC_DOWNLOAD_DIR + "/" + keyBase + ".mp3";
-                    std::string cand2 = LEGACY_VIDEO_DIR + "/" + keyBase + ".mkv";
-                    std::string cand3 = LEGACY_MUSIC_DIR + "/" + keyBase + ".mp3";
-                    std::string cand4 = BASE_DOWNLOAD_DIR + "/" + keyBase + ".mp3";
-                    std::string cand5 = BASE_DOWNLOAD_DIR + "/" + keyBase + ".mkv";
-                    if (isFileValid(cand1)) lp = cand1;
-                    else if (isFileValid(cand2)) lp = cand2;
-                    else if (isFileValid(cand3)) lp = cand3;
-                    else if (isFileValid(cand4)) lp = cand4;
-                    else if (isFileValid(cand5)) lp = cand5;
-                }
-
-                if (isFileValid(lp)) {
-
-                    PlexMediaItem it;
-                    if (rk && rk->valuestring) it.ratingKey = rk->valuestring;
-                    if (title && title->valuestring) it.title = title->valuestring;
-                    if (parentTitle && parentTitle->valuestring) it.parentTitle = parentTitle->valuestring;
-                    if (gpTitle && gpTitle->valuestring) it.grandparentTitle = gpTitle->valuestring;
-                    if (summary && summary->valuestring) it.summary = summary->valuestring;
-                    if (fileSize && cJSON_IsNumber(fileSize)) it.localFileSize = (int64_t)fileSize->valuedouble;
-                    if (durationMs && cJSON_IsNumber(durationMs)) it.durationMs = (int64_t)durationMs->valuedouble;
-                    cJSON* viewOffsetMs = cJSON_GetObjectItem(root, "viewOffsetMs");
-                    if (viewOffsetMs && cJSON_IsNumber(viewOffsetMs)) it.viewOffsetMs = (int64_t)viewOffsetMs->valuedouble;
-                    if (year && cJSON_IsNumber(year)) it.year = year->valueint;
-                    if (index && cJSON_IsNumber(index)) it.index = index->valueint;
-
-                    std::string tStr = (type && type->valuestring) ? type->valuestring : "";
-                    if (tStr == "track") it.type = MediaType::TRACK;
-                    else if (tStr == "episode") it.type = MediaType::EPISODE;
-                    else if (tStr == "movie") {
-                        if (!it.grandparentTitle.empty() || it.parentTitle.find("Season") != std::string::npos) {
-                            it.type = MediaType::EPISODE;
-                        } else {
-                            it.type = MediaType::MOVIE;
+                        std::string lp = (localPath && localPath->valuestring) ? localPath->valuestring : "";
+                        if (lp.empty() || !isFileValid(lp)) {
+                            std::string keyBase = fname.substr(0, fname.length() - 5);
+                            std::string cand1 = MUSIC_DOWNLOAD_DIR + "/" + keyBase + ".mp3";
+                            std::string cand2 = LEGACY_VIDEO_DIR + "/" + keyBase + ".mkv";
+                            std::string cand3 = LEGACY_MUSIC_DIR + "/" + keyBase + ".mp3";
+                            std::string cand4 = BASE_DOWNLOAD_DIR + "/" + keyBase + ".mp3";
+                            std::string cand5 = BASE_DOWNLOAD_DIR + "/" + keyBase + ".mkv";
+                            if (isFileValid(cand1)) lp = cand1;
+                            else if (isFileValid(cand2)) lp = cand2;
+                            else if (isFileValid(cand3)) lp = cand3;
+                            else if (isFileValid(cand4)) lp = cand4;
+                            else if (isFileValid(cand5)) lp = cand5;
                         }
-                    } else if (tStr == "show") it.type = MediaType::SHOW;
-                    else if (tStr == "season") it.type = MediaType::SEASON;
-                    else if (tStr == "artist") it.type = MediaType::ARTIST;
-                    else if (tStr == "album") it.type = MediaType::ALBUM;
-                    else {
-                        if (!it.grandparentTitle.empty() || it.parentTitle.find("Season") != std::string::npos) {
-                            it.type = MediaType::EPISODE;
-                        } else if (lp.rfind(".mp3") == lp.length() - 4) {
-                            it.type = MediaType::TRACK;
-                        } else {
-                            it.type = MediaType::MOVIE;
+
+                        if (isFileValid(lp)) {
+                            PlexMediaItem it;
+                            if (rk && rk->valuestring) it.ratingKey = rk->valuestring;
+                            if (title && title->valuestring) it.title = title->valuestring;
+                            if (parentTitle && parentTitle->valuestring) it.parentTitle = parentTitle->valuestring;
+                            if (gpTitle && gpTitle->valuestring) it.grandparentTitle = gpTitle->valuestring;
+                            if (summary && summary->valuestring) it.summary = summary->valuestring;
+                            if (fileSize && cJSON_IsNumber(fileSize)) it.localFileSize = (int64_t)fileSize->valuedouble;
+                            if (durationMs && cJSON_IsNumber(durationMs)) it.durationMs = (int64_t)durationMs->valuedouble;
+                            cJSON* viewOffsetMs = cJSON_GetObjectItem(root, "viewOffsetMs");
+                            if (viewOffsetMs && cJSON_IsNumber(viewOffsetMs)) it.viewOffsetMs = (int64_t)viewOffsetMs->valuedouble;
+                            if (year && cJSON_IsNumber(year)) it.year = year->valueint;
+                            if (index && cJSON_IsNumber(index)) it.index = index->valueint;
+
+                            std::string tStr = (type && type->valuestring) ? type->valuestring : "";
+                            if (tStr == "track") it.type = MediaType::TRACK;
+                            else if (tStr == "episode") it.type = MediaType::EPISODE;
+                            else if (tStr == "movie") {
+                                if (!it.grandparentTitle.empty() || it.parentTitle.find("Season") != std::string::npos) {
+                                    it.type = MediaType::EPISODE;
+                                } else {
+                                    it.type = MediaType::MOVIE;
+                                }
+                            } else if (tStr == "show") it.type = MediaType::SHOW;
+                            else if (tStr == "season") it.type = MediaType::SEASON;
+                            else if (tStr == "artist") it.type = MediaType::ARTIST;
+                            else if (tStr == "album") it.type = MediaType::ALBUM;
+                            else {
+                                if (!it.grandparentTitle.empty() || it.parentTitle.find("Season") != std::string::npos) {
+                                    it.type = MediaType::EPISODE;
+                                } else if (lp.rfind(".mp3") == lp.length() - 4) {
+                                    it.type = MediaType::TRACK;
+                                } else {
+                                    it.type = MediaType::MOVIE;
+                                }
+                            }
+
+                            it.isOffline = true;
+                            it.localFilePath = lp;
+                            it.partKey = lp;
+                            it.key = lp;
+
+                            if (!it.ratingKey.empty()) {
+                                ratingKeys.insert(it.ratingKey);
+                                paths[it.ratingKey] = lp;
+                            }
+                            knownFilePaths.insert(lp);
+                            items.push_back(it);
                         }
+                        cJSON_Delete(root);
                     }
-
-                    it.isOffline = true;
-                    it.localFilePath = lp;
-                    it.partKey = lp;
-                    it.key = lp;
-
-                    items.push_back(it);
+                } else {
+                    fclose(f);
                 }
-                cJSON_Delete(root);
             }
         }
+        closedir(dir);
     }
-    closedir(dir);
 
     // Recursively scan directories for any media files missing meta json files
     auto scanDirRecursive = [&](auto& self, const std::string& dirPath, int depth, MediaType defaultType, const std::string& parentFolder, const std::string& gpFolder) -> void {
@@ -415,14 +419,7 @@ std::vector<PlexMediaItem> DownloadManager::getDownloadedItems() {
                 bool isMp3 = (name.length() > 4 && name.rfind(".mp3") == name.length() - 4);
                 if (!isMkv && !isMp4 && !isMp3) continue;
 
-                bool alreadyIn = false;
-                for (const auto& existing : items) {
-                    if (existing.localFilePath == fullPath) {
-                        alreadyIn = true;
-                        break;
-                    }
-                }
-                if (alreadyIn) continue;
+                if (knownFilePaths.count(fullPath) > 0) continue; // Fast O(1) set lookup
 
                 std::string base = name.substr(0, name.rfind('.'));
                 if (base.rfind(".temp_", 0) == 0) base = base.substr(6);
@@ -448,6 +445,11 @@ std::vector<PlexMediaItem> DownloadManager::getDownloadedItems() {
                 } else {
                     it.type = MediaType::MOVIE;
                 }
+                if (!it.ratingKey.empty()) {
+                    ratingKeys.insert(it.ratingKey);
+                    paths[it.ratingKey] = fullPath;
+                }
+                knownFilePaths.insert(fullPath);
                 items.push_back(it);
             }
         }
@@ -460,7 +462,11 @@ std::vector<PlexMediaItem> DownloadManager::getDownloadedItems() {
     scanDirRecursive(scanDirRecursive, LEGACY_VIDEO_DIR, 2, MediaType::MOVIE, "", "");
     scanDirRecursive(scanDirRecursive, LEGACY_MUSIC_DIR, 2, MediaType::TRACK, "", "");
     scanDirRecursive(scanDirRecursive, BASE_DOWNLOAD_DIR, 1, MediaType::TRACK, "", "");
-    return items;
+
+    m_cachedDownloadedItems = std::move(items);
+    m_cachedPaths = std::move(paths);
+    m_cachedRatingKeys = std::move(ratingKeys);
+    m_cacheDirty.store(false);
 }
 
 int64_t DownloadManager::getSDFreeSpaceBytes() {
@@ -493,6 +499,19 @@ bool DownloadManager::deleteDownload(const std::string& ratingKey) {
         removeFileAndPruneEmptyDirs(localPath);
     }
     remove(metaPath.c_str());
+
+    {
+        std::lock_guard<std::mutex> lock(m_cacheMutex);
+        m_cachedRatingKeys.erase(ratingKey);
+        m_cachedPaths.erase(ratingKey);
+        for (auto it = m_cachedDownloadedItems.begin(); it != m_cachedDownloadedItems.end(); ++it) {
+            if (it->ratingKey == ratingKey) {
+                m_cachedDownloadedItems.erase(it);
+                break;
+            }
+        }
+    }
+    m_cacheDirty.store(true);
     return true;
 }
 
@@ -530,6 +549,16 @@ bool DownloadManager::updatePlaybackOffset(const std::string& ratingKey, int64_t
         free(jsonStr);
     }
     cJSON_Delete(root);
+
+    {
+        std::lock_guard<std::mutex> lock(m_cacheMutex);
+        for (auto& it : m_cachedDownloadedItems) {
+            if (it.ratingKey == ratingKey) {
+                it.viewOffsetMs = offsetMs;
+                break;
+            }
+        }
+    }
     return true;
 }
 
@@ -571,6 +600,32 @@ void DownloadManager::saveMetadata(const PlexMediaItem& item, const std::string&
         free(jsonStr);
     }
     cJSON_Delete(root);
+
+    PlexMediaItem it = item;
+    it.isOffline = true;
+    it.localFilePath = filePath;
+    it.partKey = filePath;
+    it.key = filePath;
+    it.localFileSize = fileSize;
+    {
+        std::lock_guard<std::mutex> lock(m_cacheMutex);
+        if (!it.ratingKey.empty()) {
+            m_cachedRatingKeys.insert(it.ratingKey);
+            m_cachedPaths[it.ratingKey] = filePath;
+            bool found = false;
+            for (auto& existing : m_cachedDownloadedItems) {
+                if (existing.ratingKey == it.ratingKey) {
+                    existing = it;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                m_cachedDownloadedItems.push_back(it);
+            }
+        }
+    }
+    m_cacheDirty.store(true);
 }
 
 #ifdef __3DS__

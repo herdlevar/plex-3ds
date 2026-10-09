@@ -5,6 +5,8 @@
 #include <vector>
 #include <atomic>
 #include <mutex>
+#include <unordered_map>
+#include <unordered_set>
 
 #ifdef __3DS__
 #include <3ds.h>
@@ -71,11 +73,24 @@ public:
     int getQueueSize();
     void setClientIdentifier(const std::string& clientId) { m_clientIdentifier = clientId; }
 
+    // Cache management
+    void invalidateCache();
+    void refreshCache();
+
 private:
     std::string m_clientIdentifier;
     std::atomic<bool> m_isDownloading{false};
     std::atomic<bool> m_cancelRequested{false};
     std::atomic<int> m_completedCount{0};
+
+    mutable std::mutex m_cacheMutex;
+    mutable std::atomic<bool> m_cacheDirty{true};
+    mutable std::vector<PlexMediaItem> m_cachedDownloadedItems;
+    mutable std::unordered_map<std::string, std::string> m_cachedPaths;
+    mutable std::unordered_set<std::string> m_cachedRatingKeys;
+
+    void ensureCacheLoaded() const;
+    void refreshCacheInternal() const;
 
     DownloadProgress m_progress;
     std::mutex m_progressMutex;

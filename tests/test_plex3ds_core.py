@@ -823,6 +823,129 @@ class TestPlex3DSOfflineNavigation(unittest.TestCase):
         self.assertEqual(album_tracks[1]["title"], "Aerodynamic")
 
 
+class TestPlex3DSDownloadCache(unittest.TestCase):
+    class SimulatedDownloadManagerWithCache:
+        def __init__(self):
+            self.disk_scan_count = 0
+            self.cache_dirty = True
+            self.cached_items = []
+            self.cached_paths = {}
+            self.cached_keys = set()
+            self.simulated_fs = {
+                "rk_1": {"ratingKey": "rk_1", "title": "Track 1", "localPath": "sdmc:/downloads/1.mp3", "viewOffsetMs": 0},
+                "rk_2": {"ratingKey": "rk_2", "title": "Track 2", "localPath": "sdmc:/downloads/2.mp3", "viewOffsetMs": 5000},
+            }
+
+        def ensure_cache_loaded(self):
+            if not self.cache_dirty:
+                return
+            # Simulate expensive SD card directory and JSON scan
+            self.disk_scan_count += 1
+            self.cached_items = []
+            self.cached_paths = {}
+            self.cached_keys = set()
+            for rk, data in self.simulated_fs.items():
+                item = dict(data)
+                self.cached_items.append(item)
+                self.cached_paths[rk] = data["localPath"]
+                self.cached_keys.add(rk)
+            self.cache_dirty = False
+
+        def get_downloaded_items(self):
+            self.ensure_cache_loaded()
+            return list(self.cached_items)
+
+        def is_downloaded(self, rating_key):
+            self.ensure_cache_loaded()
+            return rating_key in self.cached_keys
+
+        def get_local_file_path(self, rating_key):
+            self.ensure_cache_loaded()
+            return self.cached_paths.get(rating_key, "")
+
+        def save_metadata(self, rating_key, title, path):
+            self.simulated_fs[rating_key] = {"ratingKey": rating_key, "title": title, "localPath": path, "viewOffsetMs": 0}
+            # Cache is updated and marked dirty for full refresh if needed
+            self.cached_keys.add(rating_key)
+            self.cached_paths[rating_key] = path
+            self.cached_items.append({"ratingKey": rating_key, "title": title, "localPath": path, "viewOffsetMs": 0})
+            self.cache_dirty = True
+
+        def delete_download(self, rating_key):
+            if rating_key in self.simulated_fs:
+                del self.simulated_fs[rating_key]
+            self.cached_keys.discard(rating_key)
+            self.cached_paths.pop(rating_key, None)
+            self.cached_items = [it for it in self.cached_items if it["ratingKey"] != rating_key]
+            self.cache_dirty = True
+
+        def update_playback_offset(self, rating_key, offset_ms):
+            if rating_key in self.simulated_fs:
+                self.simulated_fs[rating_key]["viewOffsetMs"] = offset_ms
+            for it in self.cached_items:
+                if it["ratingKey"] == rating_key:
+                    it["viewOffsetMs"] = offset_ms
+                    break
+
+    def test_cache_avoids_repeated_disk_scans(self):
+        mgr = self.SimulatedDownloadManagerWithCache()
+        self.assertEqual(mgr.disk_scan_count, 0)
+
+        # First navigation call: triggers initial disk scan
+        items = mgr.get_downloaded_items()
+        self.assertEqual(len(items), 2)
+        self.assertEqual(mgr.disk_scan_count, 1)
+
+        # Repeated navigation and drilldown queries MUST NOT touch disk
+        for _ in range(50):
+            items_again = mgr.get_downloaded_items()
+            self.assertEqual(len(items_again), 2)
+            self.assertTrue(mgr.is_downloaded("rk_1"))
+            self.assertEqual(mgr.get_local_file_path("rk_2"), "sdmc:/downloads/2.mp3")
+
+        # Disk scan count MUST remain 1
+        self.assertEqual(mgr.disk_scan_count, 1)
+
+    def test_cache_invalidates_and_updates_on_new_download(self):
+        mgr = self.SimulatedDownloadManagerWithCache()
+        items = mgr.get_downloaded_items()
+        self.assertEqual(mgr.disk_scan_count, 1)
+        self.assertEqual(len(items), 2)
+
+        # Simulate new download completing
+        mgr.save_metadata("rk_3", "Track 3", "sdmc:/downloads/3.mp3")
+        self.assertTrue(mgr.is_downloaded("rk_3"))
+
+        # Re-fetching items reflects the new download
+        updated_items = mgr.get_downloaded_items()
+        self.assertEqual(len(updated_items), 3)
+        self.assertEqual(mgr.disk_scan_count, 2)
+
+    def test_cache_invalidates_and_updates_on_delete(self):
+        mgr = self.SimulatedDownloadManagerWithCache()
+        items = mgr.get_downloaded_items()
+        self.assertEqual(len(items), 2)
+
+        mgr.delete_download("rk_1")
+        self.assertFalse(mgr.is_downloaded("rk_1"))
+        self.assertEqual(mgr.get_local_file_path("rk_1"), "")
+
+        items_after_del = mgr.get_downloaded_items()
+        self.assertEqual(len(items_after_del), 1)
+
+    def test_playback_offset_updates_in_memory_directly(self):
+        mgr = self.SimulatedDownloadManagerWithCache()
+        mgr.get_downloaded_items()
+        self.assertEqual(mgr.disk_scan_count, 1)
+
+        mgr.update_playback_offset("rk_2", 42000)
+        items = mgr.get_downloaded_items()
+        item2 = [it for it in items if it["ratingKey"] == "rk_2"][0]
+        self.assertEqual(item2["viewOffsetMs"], 42000)
+        # Offset update did NOT require a disk rescan
+        self.assertEqual(mgr.disk_scan_count, 1)
+
+
 class TestPlex3DSAudioPlayerSeeking(unittest.TestCase):
     class SimulatedAudioPlayer:
         CHUNK_SIZE = 64 * 1024
