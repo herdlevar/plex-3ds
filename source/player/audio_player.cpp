@@ -627,12 +627,12 @@ void AudioPlayer::stop() {
 
 #ifdef __3DS__
     if (m_decodeThread) {
-        threadJoin(m_decodeThread, U64_MAX);
+        threadJoin(m_decodeThread, 1000000000ULL);
         threadFree(m_decodeThread);
         m_decodeThread = nullptr;
     }
     if (m_downloadThread) {
-        threadJoin(m_downloadThread, U64_MAX);
+        threadJoin(m_downloadThread, 1000000000ULL);
         threadFree(m_downloadThread);
         m_downloadThread = nullptr;
     }

@@ -59,20 +59,32 @@ static int readPacketCallback(void* opaque, uint8_t* buf, int bufSize) {
     return self->readStream(buf, bufSize);
 }
 
+struct LocalFileContext {
+    FILE* file;
+    VideoPlayer* player;
+};
+
 static int readLocalFileCallback(void* opaque, uint8_t* buf, int bufSize) {
-    FILE* f = static_cast<FILE*>(opaque);
-    if (!f) return AVERROR(EINVAL);
-    size_t r = fread(buf, 1, bufSize, f);
+    LocalFileContext* ctx = static_cast<LocalFileContext*>(opaque);
+    if (!ctx || !ctx->file) return AVERROR(EINVAL);
+    if (ctx->player && (ctx->player->isStopRequested() || g_appExiting.load())) {
+        return AVERROR_EOF;
+    }
+    size_t r = fread(buf, 1, bufSize, ctx->file);
     if (r == 0) {
-        if (feof(f)) return AVERROR_EOF;
+        if (feof(ctx->file)) return AVERROR_EOF;
         return AVERROR(EIO);
     }
     return (int)r;
 }
 
 static int64_t seekLocalFileCallback(void* opaque, int64_t offset, int whence) {
-    FILE* f = static_cast<FILE*>(opaque);
-    if (!f) return -1;
+    LocalFileContext* ctx = static_cast<LocalFileContext*>(opaque);
+    if (!ctx || !ctx->file) return -1;
+    if (ctx->player && (ctx->player->isStopRequested() || g_appExiting.load())) {
+        return -1;
+    }
+    FILE* f = ctx->file;
     if (whence & AVSEEK_SIZE) {
         long cur = ftell(f);
         if (cur < 0) return -1;
@@ -265,6 +277,7 @@ void VideoPlayer::decodeLoop() {
     unsigned char* avioBuf = nullptr;
     FILE* localFile = nullptr;
 
+    LocalFileContext localCtx = { nullptr, this };
     if (m_isLocalFile.load()) {
         m_statusMsg = "Opening local video...";
         localFile = fopen(m_currentUrl.c_str(), "rb");
@@ -273,20 +286,25 @@ void VideoPlayer::decodeLoop() {
             m_isPlaying = false;
             return;
         }
+        localCtx.file = localFile;
 
         const size_t LOCAL_AVIO_BUF_SIZE = 64 * 1024;
         avioBuf = (unsigned char*)av_malloc(LOCAL_AVIO_BUF_SIZE);
         if (!avioBuf) {
             fclose(localFile);
+            localFile = nullptr;
+            localCtx.file = nullptr;
             m_statusMsg = "Out of memory (avio)";
             m_isPlaying = false;
             return;
         }
 
-        avioCtx = avio_alloc_context(avioBuf, LOCAL_AVIO_BUF_SIZE, 0, localFile, readLocalFileCallback, NULL, seekLocalFileCallback);
+        avioCtx = avio_alloc_context(avioBuf, LOCAL_AVIO_BUF_SIZE, 0, &localCtx, readLocalFileCallback, NULL, seekLocalFileCallback);
         if (!avioCtx) {
             av_free(avioBuf);
             fclose(localFile);
+            localFile = nullptr;
+            localCtx.file = nullptr;
             m_statusMsg = "Failed to allocate AVIO";
             m_isPlaying = false;
             return;
@@ -697,7 +715,9 @@ void VideoPlayer::decodeLoop() {
                     }
 
                     if (swsCtx) {
+                        if (m_stopRequested.load() || g_appExiting.load()) break;
                         sws_scale(swsCtx, frame->data, frame->linesize, 0, srcH, dstData, dstLinesize);
+                        if (m_stopRequested.load() || g_appExiting.load()) break;
                         tileImageRGB565(rgb565Buf, (uint16_t*)m_videoTex.data, dstW, dstH, 512);
                         GSPGPU_FlushDataCache(m_videoTex.data, m_videoTex.size);
                         m_hasFrame = true;
@@ -724,6 +744,7 @@ void VideoPlayer::decodeLoop() {
                             svcSleepThread(diff * 1000000ULL);
                         } else if (diff < -150) {
                             playbackStartTick = osGetTime() - targetTimeMs;
+                            svcSleepThread(1000000ULL); // Yield 1ms to prevent starvation of system threads (e.g. APT handler)
                         } else {
                             svcSleepThread(1000000ULL);
                         }
@@ -883,10 +904,10 @@ bool VideoPlayer::start(const std::string& streamUrl, int64_t durationMs, int64_
         m_downloadFinished = true;
     }
 
-    // Spawn decode thread (priority 0x30, try any core -1, fallback to default core -2)
-    m_decodeThread = threadCreate(decodeThreadEntry, this, 128 * 1024, 0x30, -1, false);
+    // Spawn decode thread (priority 0x31, try any core -1, fallback to default core -2)
+    m_decodeThread = threadCreate(decodeThreadEntry, this, 128 * 1024, 0x31, -1, false);
     if (!m_decodeThread) {
-        m_decodeThread = threadCreate(decodeThreadEntry, this, 128 * 1024, 0x30, -2, false);
+        m_decodeThread = threadCreate(decodeThreadEntry, this, 128 * 1024, 0x31, -2, false);
     }
     if (!m_decodeThread) {
         m_statusMsg = "Failed to create decode thread";
@@ -963,12 +984,12 @@ void VideoPlayer::stop() {
 
 #ifdef __3DS__
     if (m_decodeThread) {
-        threadJoin(m_decodeThread, U64_MAX);
+        threadJoin(m_decodeThread, 1000000000ULL);
         threadFree(m_decodeThread);
         m_decodeThread = nullptr;
     }
     if (m_downloadThread) {
-        threadJoin(m_downloadThread, U64_MAX);
+        threadJoin(m_downloadThread, 1000000000ULL);
         threadFree(m_downloadThread);
         m_downloadThread = nullptr;
     }

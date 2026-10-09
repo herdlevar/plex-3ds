@@ -43,6 +43,7 @@ public:
     int64_t getBytesReceived() const { return m_bytesReceived.load(); }
     std::string getStatusMessage() const { return m_statusMsg; }
     bool isLocalFile() const { return m_isLocalFile.load(); }
+    bool isStopRequested() const { return m_stopRequested.load(); }
     int getElapsedConnectSec() const {
         if (m_connectStartTick == 0) return 0;
 #ifdef __3DS__

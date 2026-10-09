@@ -1004,7 +1004,7 @@ void DownloadManager::downloadLoop() {
             ctx.downloadFinished.store(true);
 
             if (ctx.writerThread) {
-                threadJoin(ctx.writerThread, U64_MAX);
+                threadJoin(ctx.writerThread, 1000000000ULL);
                 threadFree(ctx.writerThread);
                 ctx.writerThread = nullptr;
             }
@@ -1126,7 +1126,7 @@ int DownloadManager::queueDownloads(const std::vector<std::pair<PlexMediaItem, s
 
 #ifdef __3DS__
         if (m_thread) {
-            threadJoin(m_thread, U64_MAX);
+            threadJoin(m_thread, 1000000000ULL);
             threadFree(m_thread);
             m_thread = nullptr;
         }
@@ -1169,7 +1169,7 @@ void DownloadManager::cancelDownload() {
     }
 #ifdef __3DS__
     if (m_thread) {
-        threadJoin(m_thread, U64_MAX);
+        threadJoin(m_thread, 1000000000ULL);
         threadFree(m_thread);
         m_thread = nullptr;
     }

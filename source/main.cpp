@@ -2681,16 +2681,6 @@ int main(int argc, char* argv[]) {
 #endif
 
     // Clean exit
-#ifdef __3DS__
-    aptUnhook(&g_aptCookie);
-    aptSetSleepAllowed(true);
-    if (s_bottomScreenOff) {
-        s_bottomScreenOff = false;
-    }
-    GSPLCD_PowerOnAllBacklights();
-    gspLcdExit();
-    ptmuExit();
-#endif
     if (g_hasNowPlaying && g_nowPlayingItem.type != MediaType::TRACK) {
         int64_t curMs = videoPlayer.getCurrentTimeMs();
         if (curMs > 10000 && (g_nowPlayingItem.durationMs <= 0 || curMs < g_nowPlayingItem.durationMs - 15000)) {
@@ -2705,13 +2695,32 @@ int main(int argc, char* argv[]) {
     }
     saveResume();
 
+    // 1. Immediately stop all player threads and active downloads
+    videoPlayer.stop();
+    audioPlayer.stop();
     g_downloadManager.exit();
+
+    // 2. Free player resources and textures
     videoPlayer.exit();
     audioPlayer.exit();
+
+    // 3. Shut down UI rendering while GPU rights and display are still valid
     ui.exit();
+
 #ifdef __3DS__
+    // 4. Safely tear down 3DS hardware and services in strict reverse initialization order
+    aptUnhook(&g_aptCookie);
+    aptSetSleepAllowed(true);
+    if (s_bottomScreenOff) {
+        s_bottomScreenOff = false;
+    }
+    GSPLCD_PowerOnAllBacklights();
+    gspLcdExit();
+    ptmuExit();
     ndspExit();
 #endif
+
+    // 5. Final network exit
     Network::exit();
     return 0;
 }

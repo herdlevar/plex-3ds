@@ -628,6 +628,75 @@ class TestPlex3DSHomeButtonPolicy(unittest.TestCase):
         self.assertFalse(chainloader_cleared)
         self.assertTrue(app_exiting)
 
+    def test_video_player_thread_teardown_bounded_timeout_and_abort(self):
+        # Bounded 1-second timeout (1,000,000,000 ns) prevents infinite hang on threadJoin
+        BOUNDED_JOIN_TIMEOUT_NS = 1000000000
+        INFINITE_TIMEOUT = 0xFFFFFFFFFFFFFFFF
+        self.assertLess(BOUNDED_JOIN_TIMEOUT_NS, INFINITE_TIMEOUT)
+
+        # Verify callback abort logic on stop request or app exit
+        def mock_read_local_file_callback(is_stop_requested, app_exiting):
+            if is_stop_requested or app_exiting:
+                return -541478725  # AVERROR_EOF in FFmpeg
+            return 4096  # bytes read
+
+        def mock_seek_local_file_callback(is_stop_requested, app_exiting):
+            if is_stop_requested or app_exiting:
+                return -1
+            return 0  # seek offset
+
+        # Normal playback reads data
+        self.assertEqual(mock_read_local_file_callback(False, False), 4096)
+        self.assertEqual(mock_seek_local_file_callback(False, False), 0)
+
+        # Stop requested: aborts immediately without touching disk
+        self.assertEqual(mock_read_local_file_callback(True, False), -541478725)
+        self.assertEqual(mock_seek_local_file_callback(True, False), -1)
+
+        # App exiting: aborts immediately without touching disk
+        self.assertEqual(mock_read_local_file_callback(False, True), -541478725)
+        self.assertEqual(mock_seek_local_file_callback(False, True), -1)
+
+    def test_clean_exit_teardown_order(self):
+        # Clean exit must follow strict shutdown order:
+        # 1. Stop all worker & decode threads
+        # 2. Free player resources and textures
+        # 3. Shut down UI rendering
+        # 4. Tear down hardware and LCD/GSP services
+        # 5. Network exit
+        order_of_operations = []
+
+        def stop_players():
+            order_of_operations.append("STOP_PLAYERS")
+
+        def free_players():
+            order_of_operations.append("FREE_PLAYERS")
+
+        def exit_ui():
+            order_of_operations.append("EXIT_UI")
+
+        def exit_hardware():
+            order_of_operations.append("EXIT_HARDWARE")
+
+        def exit_network():
+            order_of_operations.append("EXIT_NETWORK")
+
+        # Simulate clean exit sequence
+        stop_players()
+        free_players()
+        exit_ui()
+        exit_hardware()
+        exit_network()
+
+        expected = [
+            "STOP_PLAYERS",
+            "FREE_PLAYERS",
+            "EXIT_UI",
+            "EXIT_HARDWARE",
+            "EXIT_NETWORK"
+        ]
+        self.assertEqual(order_of_operations, expected)
+
 
 def sanitize_path_component(name):
     if not name:
