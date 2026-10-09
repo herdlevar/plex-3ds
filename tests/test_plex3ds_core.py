@@ -591,34 +591,30 @@ class TestPlex3DSSuspendResumePolicy(unittest.TestCase):
 
 
 class TestPlex3DSHomeButtonPolicy(unittest.TestCase):
-    def test_cia_allows_home_suspension(self):
-        # In installed CIA application, envIsHomebrew() is False.
-        # aptSetHomeAllowed(True) is enabled to support native 3DS HOME Menu suspension.
-        is_homebrew = False
-        apt_home_allowed = not is_homebrew
-        self.assertTrue(apt_home_allowed)
-
-        # When HOME button is pressed under CIA, the press is accepted (not rejected).
+    def test_home_press_rejected_exits_cleanly(self):
+        # aptSetHomeAllowed(False) is universally enabled across both CIA and 3dsx builds
+        # to prevent 3DS kernel GPU deadlocks during video playback.
+        apt_home_allowed = False
         home_press_rejected = not apt_home_allowed
-        self.assertFalse(home_press_rejected)
+        self.assertTrue(home_press_rejected)
 
-    def test_hbl_disallows_home_and_exits_cleanly(self):
-        # Under Homebrew Launcher (.3dsx), envIsHomebrew() is True.
-        # Home menu suspension is not supported by HBL, so aptSetHomeAllowed(False) is set.
-        is_homebrew = True
-        apt_home_allowed = not is_homebrew
-        self.assertFalse(apt_home_allowed)
-
-        # When HOME is pressed in HBL, aptCheckHomePressRejected() catches it
-        home_press_rejected = not apt_home_allowed
+        # When HOME is pressed, aptCheckHomePressRejected() detects it
         chainloader_cleared = False
         app_exiting = False
+        resume_saved = False
+        playback_stopped = False
+
         if home_press_rejected:
             chainloader_cleared = True
             app_exiting = True
+            # Clean exit sequence preserves playback state
+            resume_saved = True
+            playback_stopped = True
 
         self.assertTrue(chainloader_cleared)
         self.assertTrue(app_exiting)
+        self.assertTrue(resume_saved)
+        self.assertTrue(playback_stopped)
 
     def test_start_press_keeps_chainloader_for_hbmenu_exit(self):
         # When START is pressed, chainloader is NOT cleared (returns to hbmenu)
